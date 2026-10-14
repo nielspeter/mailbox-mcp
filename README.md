@@ -20,6 +20,16 @@ mailbox-mcp is an [MCP server](https://modelcontextprotocol.io) that connects yo
 - **Tools for the workflows that matter.** Search, read, send, reply, forward, drafts, labels, filters, templates, signatures, vacation replies, attachments, unsubscribe, and more.
 - **Zero native dependencies.** Pure Node.js. Install and run anywhere.
 
+## Changes in this fork
+
+This is [nielspeter/mailbox-mcp](https://github.com/nielspeter/mailbox-mcp), a fork of [jgalea/mailbox-mcp](https://github.com/jgalea/mailbox-mcp). `main` is upstream plus the changes below, which mostly make a Gmail or Google Workspace account connected over IMAP (with an app password, no Google Cloud OAuth client) behave like one connected through the Gmail API.
+
+- **Gmail search syntax over IMAP.** On servers that advertise `X-GM-EXT-1` (`imap.gmail.com`), `search_emails` and `multi_account_search` pass the query to Gmail as-is (`X-GM-RAW`), so `from:(@example.com OR @example.org) newer_than:1d`, `has:attachment`, `label:` and the rest work. Without a `folder`, the search covers All Mail, falling back to INBOX if All Mail is hidden from IMAP. Bulk trash and modify keep their INBOX default. Other IMAP servers still match subject and body in INBOX.
+- **Whole threads over Gmail IMAP.** `read_thread` takes the id of any message in the thread, looks up its Gmail thread id (`X-GM-THRID`) and returns every message from All Mail, oldest first. On other IMAP servers it still refuses.
+- **Reply drafts land in the thread.** `create_draft` with `in_reply_to` (and `reply_email` on `draftsOnly` accounts) now sets `In-Reply-To`, `References` and a `Re:` subject on IMAP drafts. Before, they ignored the original and started a new conversation.
+- **HTML by default.** `create_draft`, `reply_email`, `send_email` and `update_draft` compose HTML unless `html: false`. A body written as plain text is escaped and converted (blank lines become paragraphs, newlines `<br>`). `forward_email` is unchanged.
+- **Non-ASCII attachment filenames.** IMAP drafts and sends wrote names like `Årsrapport.pdf` as an unquoted encoded word, which is not a valid parameter value, so Gmail dropped the name. They now carry RFC 2231 `filename*=UTF-8''…` plus a quoted fallback.
+
 ## Security
 
 Giving a model access to a mailbox means giving it access to text written by strangers. Any sender controls the subject, body, headers and attachment filenames of what the model reads, so the two risks are the model following instructions planted in an email, and the model sending mail somewhere it shouldn't (the usual goal of such instructions: forward the thread, reply with the contents of another message, mail a secret to an outside address). mailbox-mcp puts several layers between those two things.
@@ -146,14 +156,14 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `authenticate` | Add a new account |
 | `reauth` | Re-run OAuth for an existing Gmail account (use when refresh token expires with `invalid_grant`) |
 | `remove_account` | Remove an account |
-| `search_emails` | Search messages (optional `folder` to scope the search) |
-| `multi_account_search` | Run the same query across every configured account in parallel |
+| `search_emails` | Search messages (optional `folder` to scope the search). Gmail syntax on Gmail, including Gmail over IMAP, where it searches All Mail by default |
+| `multi_account_search` | Run the same query across every configured account in parallel (Gmail syntax on Gmail accounts, including over IMAP) |
 | `read_email` | Read a message |
-| `read_thread` | Read a conversation thread (Gmail + JMAP) |
+| `read_thread` | Read a conversation thread (Gmail, JMAP, and Gmail over IMAP: pass any message id from the thread) |
 | `send_email` | Send a new email (supports `from`, `attachments`; new recipients need `confirm_new_recipient`) |
 | `reply_email` | Reply to a message (supports `from`, `attachments`; extra cc/bcc to new addresses need `confirm_new_recipient`) |
 | `forward_email` | Forward a message (supports `from`, `attachments`; other domains need `confirm_external_forward`) |
-| `create_draft` | Create a draft (supports reply drafts via `in_reply_to`, plus `from`, `attachments`) |
+| `create_draft` | Create a draft (supports reply drafts via `in_reply_to`, plus `from`, `attachments`; HTML unless `html: false`) |
 | `list_drafts` | List drafts for an account |
 | `send_draft` | Send an existing draft (same recipient guards as `send_email`) |
 | `trash_emails` | Trash messages |
