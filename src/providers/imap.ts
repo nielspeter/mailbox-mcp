@@ -248,7 +248,24 @@ export class ImapProvider implements MailProvider {
     return resolved;
   }
 
-  async searchMessages(query: string, maxResults: number = 20, folder: string = "INBOX"): Promise<EmailSummary[]> {
+  /** True when the server speaks Gmail's IMAP extensions (X-GM-EXT-1), i.e. imap.gmail.com. */
+  private get isGmail(): boolean {
+    return this.imap.capabilities?.has("X-GM-EXT-1") ?? false;
+  }
+
+  /**
+   * Folder searched when the caller names none. On Gmail this is All Mail (the
+   * \All special-use folder), matching what a search in the Gmail UI covers;
+   * if All Mail is hidden from IMAP, or on any other server, it is INBOX.
+   */
+  private async defaultSearchFolder(): Promise<string> {
+    if (!this.isGmail) return "INBOX";
+    const folders = (await this.imap.list()) ?? [];
+    return folders.find((f: any) => f.specialUse === "\\All")?.path ?? "INBOX";
+  }
+
+  async searchMessages(query: string, maxResults: number = 20, folder?: string): Promise<EmailSummary[]> {
+    folder ??= await this.defaultSearchFolder();
     const lock = await this.imap.getMailboxLock(folder);
     try {
       const trimmed = query.trim();
@@ -279,11 +296,19 @@ export class ImapProvider implements MailProvider {
   }
 
   async findMessageIds(query: string, folder?: string, maxResults?: number): Promise<string[]> {
-    const messages = await this.searchMessages(query, maxResults ?? 1000, folder);
+    // Destructive bulk tools resolve ids through here; keep their default scope at INBOX.
+    const messages = await this.searchMessages(query, maxResults ?? 1000, folder ?? "INBOX");
     return messages.map((m) => m.id);
   }
 
   private async searchByText(query: string, maxResults: number): Promise<number[]> {
+    // Gmail accepts its own search syntax over IMAP (X-GM-RAW), so on Gmail the
+    // query is passed through as-is: from:, newer_than:, has:attachment, label: ...
+    if (this.isGmail) {
+      const gmailResult = await this.imap.search({ gmraw: query }, { uid: true });
+      return (gmailResult || []).slice(-maxResults).reverse();
+    }
+
     // imapflow's search() returns sequence numbers without { uid: true }.
     // Without this, the downstream fetchAll treats the seq nums as UIDs and
     // either fetches the wrong rows or returns empty results on a mailbox

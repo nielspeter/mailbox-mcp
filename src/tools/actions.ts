@@ -191,7 +191,7 @@ registerTool(
     inputSchema: {
       type: "object" as const,
       properties: {
-        query: { type: "string", description: "Search query (Gmail syntax for Gmail accounts; plain text for IMAP/JMAP)" },
+        query: { type: "string", description: "Search query (Gmail syntax for Gmail accounts, including Gmail over IMAP; plain text for other IMAP/JMAP)" },
         max_results: { type: "number", description: "Max results per account (default 10)" },
       },
       required: ["query"],

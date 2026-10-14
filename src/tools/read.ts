@@ -4,7 +4,7 @@ import { formatTriage, jevApiKey, triageMessages } from "../triage/jev.js";
 registerTool(
   {
     name: "search_emails",
-    description: "Search emails in an account. Gmail supports full Gmail search syntax. IMAP searches subject and body. Optional folder parameter scopes the search to a specific label/folder.",
+    description: "Search emails in an account. Gmail (API or imap.gmail.com) supports full Gmail search syntax and, without a folder, searches All Mail. Other IMAP servers search subject and body in INBOX. Optional folder parameter scopes the search to a specific label/folder.",
     inputSchema: {
       type: "object" as const,
       properties: {

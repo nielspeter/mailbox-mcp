@@ -73,6 +73,65 @@ describe("ImapProvider", () => {
     expect(results[0].subject).toBe("Test email");
   });
 
+  describe("Gmail over IMAP (X-GM-EXT-1)", () => {
+    const allMail = { path: "[Gmail]/All Mail", specialUse: "\\All" };
+
+    beforeEach(() => {
+      (mockImap as any).capabilities = new Map([["X-GM-EXT-1", true]]);
+      mockImap.search.mockResolvedValue([7, 8, 9]);
+      mockImap.fetchAll.mockResolvedValue([]);
+    });
+
+    it("passes the query through as Gmail search syntax", async () => {
+      mockImap.list.mockResolvedValue([allMail]);
+      await provider.searchMessages("from:(@duckwise.dk OR @nine.dk) newer_than:1d");
+      expect(mockImap.search).toHaveBeenCalledWith(
+        { gmraw: "from:(@duckwise.dk OR @nine.dk) newer_than:1d" },
+        { uid: true },
+      );
+    });
+
+    it("searches All Mail when no folder is given", async () => {
+      mockImap.list.mockResolvedValue([{ path: "INBOX" }, allMail]);
+      await provider.searchMessages("from:someone");
+      expect(mockImap.getMailboxLock).toHaveBeenCalledWith("[Gmail]/All Mail");
+    });
+
+    it("falls back to INBOX when All Mail is hidden from IMAP", async () => {
+      mockImap.list.mockResolvedValue([{ path: "INBOX" }]);
+      await provider.searchMessages("from:someone");
+      expect(mockImap.getMailboxLock).toHaveBeenCalledWith("INBOX");
+    });
+
+    it("honours an explicit folder", async () => {
+      await provider.searchMessages("from:someone", 20, "Work");
+      expect(mockImap.getMailboxLock).toHaveBeenCalledWith("Work");
+      expect(mockImap.list).not.toHaveBeenCalled();
+    });
+
+    it("keeps the bulk-operation id lookup scoped to INBOX", async () => {
+      mockImap.list.mockResolvedValue([allMail]);
+      await provider.findMessageIds("from:someone");
+      expect(mockImap.getMailboxLock).toHaveBeenCalledWith("INBOX");
+    });
+
+    it("returns the newest matches first, capped at maxResults", async () => {
+      mockImap.list.mockResolvedValue([allMail]);
+      await provider.searchMessages("from:someone", 2);
+      expect(mockImap.fetchAll).toHaveBeenCalledWith([9, 8], expect.anything(), { uid: true });
+    });
+  });
+
+  it("non-Gmail servers keep the subject/body search in INBOX", async () => {
+    mockImap.search.mockResolvedValue([]);
+    await provider.searchMessages("invoice");
+    expect(mockImap.getMailboxLock).toHaveBeenCalledWith("INBOX");
+    expect(mockImap.search).toHaveBeenCalledWith(
+      { or: [{ subject: "invoice" }, { body: "invoice" }] },
+      { uid: true },
+    );
+  });
+
   it("sendMessage uses SMTP transport", async () => {
     const id = await provider.sendMessage(["recipient@example.com"], "Hello", "Body text");
     expect(mockTransport.sendMail).toHaveBeenCalledWith(
