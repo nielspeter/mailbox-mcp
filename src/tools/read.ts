@@ -61,12 +61,12 @@ registerTool(
 registerTool(
   {
     name: "read_thread",
-    description: "Read an entire email conversation thread (Gmail and JMAP only)",
+    description: "Read an entire email conversation thread (Gmail, JMAP, and Gmail over IMAP). On IMAP pass any message ID from the thread; other IMAP servers return just that message.",
     inputSchema: {
       type: "object" as const,
       properties: {
         account: { type: "string", description: "Account alias" },
-        thread_id: { type: "string", description: "Thread ID" },
+        thread_id: { type: "string", description: "Thread ID (Gmail/JMAP), or on IMAP the ID of any message in the thread" },
       },
       required: ["account", "thread_id"],
     },

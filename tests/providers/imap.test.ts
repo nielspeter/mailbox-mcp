@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Readable } from "node:stream";
 import { ImapProvider } from "../../src/providers/imap.js";
 
 function createMockImapClient() {
@@ -492,6 +493,72 @@ describe("ImapProvider", () => {
     ]);
     await provider.archiveMessage("INBOX:303");
     expect(mockImap.messageMove).toHaveBeenCalledWith(303, "Archive", { uid: true });
+  });
+
+  describe("readThread", () => {
+    const allMail = { path: "[Gmail]/All Mail", specialUse: "\\All" };
+    const message = (uid: number, subject: string) => ({
+      uid,
+      envelope: { subject, from: [{ address: "a@example.com" }], date: new Date(`2026-10-0${uid}T10:00:00Z`) },
+      bodyStructure: { type: "text/plain", part: "1" },
+    });
+
+    beforeEach(() => {
+      mockImap.download.mockResolvedValue({ content: Readable.from([Buffer.from("body")]) });
+    });
+
+    it("advertises the threads capability only on Gmail", () => {
+      expect(provider.capabilities.threads).toBe(false);
+      (mockImap as any).capabilities = new Map([["X-GM-EXT-1", true]]);
+      expect(provider.capabilities.threads).toBe(true);
+    });
+
+    it("reads every message of the Gmail thread from All Mail, oldest first", async () => {
+      (mockImap as any).capabilities = new Map([["X-GM-EXT-1", true]]);
+      mockImap.list.mockResolvedValue([{ path: "INBOX" }, allMail]);
+      mockImap.fetchOne.mockImplementation(async (uid: number, query: any) =>
+        query.threadId ? { uid, threadId: "1878" } : message(uid, uid === 3 ? "Status" : "Re: Status"));
+      mockImap.search.mockResolvedValue([5, 3, 4]);
+
+      const thread = await provider.readThread("INBOX:9");
+
+      expect(mockImap.getMailboxLock).toHaveBeenCalledWith("INBOX");
+      expect(mockImap.getMailboxLock).toHaveBeenCalledWith("[Gmail]/All Mail");
+      expect(mockImap.search).toHaveBeenCalledWith({ threadId: "1878" }, { uid: true });
+      expect(thread.messages.map((m) => m.id)).toEqual([
+        "[Gmail]/All Mail:3", "[Gmail]/All Mail:4", "[Gmail]/All Mail:5",
+      ]);
+      expect(thread.subject).toBe("Status");
+      expect(thread.id).toBe("INBOX:9");
+    });
+
+    it("returns just the message when All Mail is hidden from IMAP", async () => {
+      (mockImap as any).capabilities = new Map([["X-GM-EXT-1", true]]);
+      mockImap.list.mockResolvedValue([{ path: "INBOX" }]);
+      mockImap.fetchOne.mockResolvedValue(message(9, "Status"));
+
+      const thread = await provider.readThread("INBOX:9");
+
+      expect(thread.messages.map((m) => m.id)).toEqual(["INBOX:9"]);
+      expect(mockImap.search).not.toHaveBeenCalled();
+    });
+
+    it("returns just the message on non-Gmail servers", async () => {
+      mockImap.fetchOne.mockResolvedValue(message(9, "Status"));
+
+      const thread = await provider.readThread("INBOX:9");
+
+      expect(thread.messages.map((m) => m.id)).toEqual(["INBOX:9"]);
+      expect(mockImap.list).not.toHaveBeenCalled();
+    });
+
+    it("refuses an id that does not exist", async () => {
+      (mockImap as any).capabilities = new Map([["X-GM-EXT-1", true]]);
+      mockImap.list.mockResolvedValue([allMail]);
+      mockImap.fetchOne.mockResolvedValue(false);
+
+      await expect(provider.readThread("INBOX:999")).rejects.toThrow("not found");
+    });
   });
 
   it("readMessage passes uid:true to fetchOne so the right message is returned", async () => {

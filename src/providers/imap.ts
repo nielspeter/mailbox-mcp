@@ -230,11 +230,14 @@ function envelopeAddresses(envelope: any): string[] {
 
 export class ImapProvider implements MailProvider {
   readonly type = "imap";
-  readonly capabilities: ProviderCapabilities = {
-    threads: false, filters: false, templates: false,
-    signatures: false, vacation: false, unsubscribe: false,
-    attachments: true, inboxSummary: true,
-  };
+  /** Threads are only readable on Gmail, which exposes a thread id over IMAP (X-GM-THRID). */
+  get capabilities(): ProviderCapabilities {
+    return {
+      threads: this.isGmail, filters: false, templates: false,
+      signatures: false, vacation: false, unsubscribe: false,
+      attachments: true, inboxSummary: true,
+    };
+  }
 
   private specialFolderCache: Map<string, string> = new Map();
 
@@ -267,9 +270,14 @@ export class ImapProvider implements MailProvider {
    * if All Mail is hidden from IMAP, or on any other server, it is INBOX.
    */
   private async defaultSearchFolder(): Promise<string> {
-    if (!this.isGmail) return "INBOX";
+    return (await this.gmailAllMailFolder()) ?? "INBOX";
+  }
+
+  /** Gmail's All Mail folder (\\All), or undefined on other servers or when it is hidden from IMAP. */
+  private async gmailAllMailFolder(): Promise<string | undefined> {
+    if (!this.isGmail) return undefined;
     const folders = (await this.imap.list()) ?? [];
-    return folders.find((f: any) => f.specialUse === "\\All")?.path ?? "INBOX";
+    return folders.find((f: any) => f.specialUse === "\\All")?.path;
   }
 
   async searchMessages(query: string, maxResults: number = 20, folder?: string): Promise<EmailSummary[]> {
@@ -427,9 +435,46 @@ export class ImapProvider implements MailProvider {
     }
   }
 
+  /**
+   * `threadId` is the id of any message in the thread (as returned by search).
+   * On Gmail the whole conversation is read from All Mail via X-GM-THRID;
+   * elsewhere IMAP has no portable thread id, so only that message is returned.
+   */
   async readThread(threadId: string): Promise<EmailThread> {
-    const message = await this.readMessage(threadId);
-    return { id: threadId, subject: message.subject, messages: [message] };
+    const ids = await this.gmailThreadMessageIds(threadId);
+    if (!ids) {
+      const message = await this.readMessage(threadId);
+      return { id: threadId, subject: message.subject, messages: [message] };
+    }
+    const messages: EmailMessage[] = [];
+    for (const id of ids) messages.push(await this.fetchMessage(id));
+    return { id: threadId, subject: messages[0]?.subject ?? "", messages };
+  }
+
+  /** All Mail ids of every message in the Gmail thread containing `messageId`, oldest first. */
+  private async gmailThreadMessageIds(messageId: string): Promise<string[] | undefined> {
+    const allMail = await this.gmailAllMailFolder();
+    if (!allMail) return undefined;
+
+    const { folder, uid } = parseImapMessageId(messageId);
+    let gmailThreadId: string | undefined;
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      const meta = await this.imap.fetchOne(uid, { threadId: true, uid: true }, { uid: true });
+      if (!meta) throw new Error(`Message ${messageId} not found`);
+      gmailThreadId = meta.threadId;
+    } finally {
+      lock.release();
+    }
+    if (!gmailThreadId) return undefined;
+
+    const allLock = await this.imap.getMailboxLock(allMail);
+    try {
+      const uids = (await this.imap.search({ threadId: gmailThreadId }, { uid: true })) || [];
+      return [...uids].sort((a, b) => a - b).map((u) => `${allMail}:${u}`);
+    } finally {
+      allLock.release();
+    }
   }
 
   async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
