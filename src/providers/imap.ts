@@ -215,6 +215,14 @@ function parseAuthResults(headers: Buffer | undefined): string[] {
     .map((line) => line.replace(/^authentication-results:\s*/i, "").trim());
 }
 
+function headerValue(headers: Buffer | undefined, name: string): string | undefined {
+  if (!headers) return undefined;
+  const prefix = new RegExp(`^${name}:\\s*`, "i");
+  const line = headers.toString("utf-8").replace(/\r?\n[ \t]+/g, " ").split(/\r?\n/)
+    .find((l) => prefix.test(l));
+  return line?.replace(prefix, "").trim() || undefined;
+}
+
 function envelopeAddresses(envelope: any): string[] {
   return [...(envelope?.from ?? []), ...(envelope?.to ?? []), ...(envelope?.cc ?? []), ...(envelope?.bcc ?? [])]
     .map((a: any) => (a?.address ?? "").toLowerCase()).filter(Boolean);
@@ -458,12 +466,15 @@ export class ImapProvider implements MailProvider {
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
+    const reply = options?.inReplyTo ? await this.replyHeaders(options.inReplyTo) : undefined;
     const raw = buildRawMimeMessage({
       from: options?.from ?? this.email,
-      to, subject, body,
+      to, subject: reply ? ensureReplyPrefix(subject) : subject, body,
       cc: options?.cc, bcc: options?.bcc,
       html: options?.html,
       attachments: options?.attachments,
+      inReplyTo: reply?.inReplyTo,
+      references: reply?.references,
     });
 
     const draftsFolder = await this.findSpecialFolder("\\Drafts");
@@ -471,6 +482,26 @@ export class ImapProvider implements MailProvider {
     try {
       await this.imap.append(draftsFolder, raw, ["\\Draft"]);
       return `draft-${Date.now()}`;
+    } finally {
+      lock.release();
+    }
+  }
+
+  /**
+   * In-Reply-To/References for a reply to `messageId` (a folder:uid id), so a
+   * reply draft joins the original's thread in the recipient's and the
+   * account's own mail client (Gmail threads on these plus the subject).
+   */
+  private async replyHeaders(messageId: string): Promise<{ inReplyTo?: string; references?: string }> {
+    const { folder, uid } = parseImapMessageId(messageId);
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      const meta = await this.imap.fetchOne(uid, { envelope: true, headers: ["references"], uid: true }, { uid: true });
+      if (!meta) throw new Error(`Message ${messageId} not found`);
+      const original = meta.envelope?.messageId;
+      if (!original) return {};
+      const references = headerValue(meta.headers, "references");
+      return { inReplyTo: original, references: references ? `${references} ${original}` : original };
     } finally {
       lock.release();
     }

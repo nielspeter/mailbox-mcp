@@ -324,7 +324,7 @@ registerTool(
         cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
-        in_reply_to: { type: "string", description: "Message ID to create draft as reply to" },
+        in_reply_to: { type: "string", description: "Message ID (from search results) to reply to: the draft gets In-Reply-To/References and a Re: subject, so it lands in that thread" },
         attachments: attachmentsSchema,
       },
       required: ["account", "to", "subject", "body"],

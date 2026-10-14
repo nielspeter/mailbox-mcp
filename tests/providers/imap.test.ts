@@ -205,6 +205,58 @@ describe("ImapProvider", () => {
     expect(mockImap.append).toHaveBeenCalledWith("Drafts", expect.any(Buffer), ["\\Draft"]);
   });
 
+  describe("createDraft as a reply (in_reply_to)", () => {
+    const draftsFolder = [{ path: "[Gmail]/Drafts", specialUse: "\\Drafts" }];
+    const appendedRaw = () => mockImap.append.mock.calls[0][1].toString();
+
+    beforeEach(() => {
+      mockImap.list.mockResolvedValue(draftsFolder);
+      mockImap.append.mockResolvedValue(undefined);
+    });
+
+    it("threads the draft under the original message", async () => {
+      mockImap.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { messageId: "<orig@example.com>" },
+        headers: Buffer.from("References: <root@example.com>\r\n <mid@example.com>\r\n\r\n"),
+      });
+
+      await provider.createDraft(["them@example.com"], "Status update", "Body", { inReplyTo: "[Gmail]/All Mail:42" });
+
+      expect(mockImap.getMailboxLock).toHaveBeenCalledWith("[Gmail]/All Mail");
+      expect(mockImap.fetchOne).toHaveBeenCalledWith(42, expect.objectContaining({ headers: ["references"] }), { uid: true });
+      const raw = appendedRaw();
+      expect(raw).toMatch(/^In-Reply-To: <orig@example.com>\r?$/m);
+      expect(raw).toMatch(/^References: <root@example.com> <mid@example.com> <orig@example.com>\r?$/m);
+      expect(raw).toMatch(/^Subject: Re: Status update\r?$/m);
+    });
+
+    it("starts References with the original when it had none", async () => {
+      mockImap.fetchOne.mockResolvedValue({ uid: 42, envelope: { messageId: "<orig@example.com>" } });
+
+      await provider.createDraft(["them@example.com"], "Re: Status update", "Body", { inReplyTo: "INBOX:42" });
+
+      const raw = appendedRaw();
+      expect(raw).toMatch(/^References: <orig@example.com>\r?$/m);
+      expect(raw).toMatch(/^Subject: Re: Status update\r?$/m);
+    });
+
+    it("refuses when the original message does not exist", async () => {
+      mockImap.fetchOne.mockResolvedValue(false);
+      await expect(
+        provider.createDraft(["them@example.com"], "Status", "Body", { inReplyTo: "INBOX:999" }),
+      ).rejects.toThrow("not found");
+      expect(mockImap.append).not.toHaveBeenCalled();
+    });
+
+    it("leaves a plain draft without reply headers", async () => {
+      await provider.createDraft(["them@example.com"], "Status update", "Body");
+      const raw = appendedRaw();
+      expect(raw).not.toMatch(/^In-Reply-To:/m);
+      expect(raw).toMatch(/^Subject: Status update\r?$/m);
+    });
+  });
+
   it("createDraft falls back to standard Drafts folder name when no specialUse match", async () => {
     mockImap.list.mockResolvedValue([{ path: "INBOX", specialUse: "\\Inbox" }]);
     mockImap.append.mockResolvedValue(undefined);
