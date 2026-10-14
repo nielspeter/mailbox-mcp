@@ -91,7 +91,7 @@ describe("approval: external", () => {
     expect(spec).toMatchObject({
       account: "personal", tool: "send_email", reason: "approval", action: { kind: "send" },
       from: "alias@example.com", to: ["a@example.net"], cc: ["Cee <c@example.net>"], bcc: ["b@example.net"],
-      subject: "Hi", body: "Hello", html: true,
+      subject: "Hi", body: "<p>Hello</p>", html: true,
       attachments: [{ path: attachment, name: "report.pdf", size: 14 }],
     });
   });
@@ -112,7 +112,7 @@ describe("approval: external", () => {
 
     const byTool = Object.fromEntries(listPending().map((s) => [s.tool, s]));
     expect(byTool.reply_email).toMatchObject({
-      action: { kind: "reply", messageId: "msg-1", replyAll: true }, subject: "Re: Hello", body: "Thanks",
+      action: { kind: "reply", messageId: "msg-1", replyAll: true }, subject: "Re: Hello", body: "<p>Thanks</p>",
       to: ["Sender <sender@example.net>", "me@example.com", "peer@example.org", "cc@example.org"], cc: ["extra@example.org"],
     });
     expect(byTool.forward_email).toMatchObject({ action: { kind: "forward", messageId: "msg-1" }, to: ["other@example.com"], subject: "Fwd: Hello", body: "FYI" });

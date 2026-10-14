@@ -1,3 +1,4 @@
+import { composeBody, htmlSchema } from "./body.js";
 import { Readable } from "node:stream";
 import { registerTool } from "./registry.js";
 import { stripFencing } from "../security/sanitize.js";
@@ -288,7 +289,7 @@ registerTool(
         },
         cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
-        html: { type: "boolean", description: "Send as HTML (default false)" },
+        html: htmlSchema,
         attachments: {
           type: "array", items: { type: "string" },
           description: "Optional list of local file paths to attach. Each must be a regular file under 25 MB.",
@@ -304,14 +305,15 @@ registerTool(
     const existing = await gmail.users.drafts.get({ userId: "me", id: args.draft_id as string, format: "metadata" });
     const threadId = existing.data.message?.threadId ?? undefined;
     const attachments = loadAttachments(args.attachments as string[] | undefined);
+    const composed = composeBody(stripFencing(args.body as string), args.html);
     const encodeOpts: GmailEncodeOptions = {
       from: args.from as string | undefined,
       cc: args.cc as string[] | undefined,
       bcc: args.bcc as string[] | undefined,
-      html: args.html as boolean | undefined,
+      html: composed.html,
       attachments,
     };
-    const rawBuffer = buildEmailBuffer(args.to as string[], stripFencing(args.subject as string), stripFencing(args.body as string), encodeOpts);
+    const rawBuffer = buildEmailBuffer(args.to as string[], stripFencing(args.subject as string), composed.body, encodeOpts);
     if (shouldUseMediaUpload(rawBuffer, encodeOpts)) {
       await gmail.users.drafts.update({
         userId: "me",

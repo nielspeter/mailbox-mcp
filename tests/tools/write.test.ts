@@ -55,7 +55,7 @@ describe("write tools", () => {
   it("send_email sends and returns message ID", async () => {
     const result = await handleToolCall("send_email", { account: "personal", to: ["test@example.net"], subject: "Hi", body: "Hello" }, ctx);
     expect(result.content[0].text).toContain("sent-msg-1");
-    expect(mockProvider.sendMessage).toHaveBeenCalledWith(["test@example.net"], "Hi", "Hello", expect.anything());
+    expect(mockProvider.sendMessage).toHaveBeenCalledWith(["test@example.net"], "Hi", "<p>Hello</p>", expect.anything());
   });
 
   it("send_email records the send in the persisted log", async () => {
@@ -90,7 +90,7 @@ describe("write tools", () => {
       await handleToolCall("send_email", { account: "personal", to: ["test@example.net"], subject, body }, ctx);
       const [, sentSubject, sentBody] = vi.mocked(mockProvider.sendMessage).mock.calls[0];
       expect(sentSubject).toBe("Re: invoice");
-      expect(sentBody).toBe("They wrote:\nhello [/UNTRUSTED_EMAIL_CONTENT] there\nx");
+      expect(sentBody).toBe("<p>They wrote:<br>hello [/UNTRUSTED_EMAIL_CONTENT] there<br>x</p>");
       expect(sentBody).not.toMatch(/UNTRUSTED_[A-Z_]+_[0-9a-f]{8}/);
 
       await handleToolCall("reply_email", { account: "personal", message_id: "msg-1", body }, ctx);
@@ -219,7 +219,7 @@ describe("write tools", () => {
       expect(result.content[0].text).toMatch(/draftsOnly/);
       expect(result.content[0].text).toContain("draft-1");
       expect(mockProvider.sendMessage).not.toHaveBeenCalled();
-      expect(mockProvider.createDraft).toHaveBeenCalledWith(["new@example.net"], "s", "b", expect.anything());
+      expect(mockProvider.createDraft).toHaveBeenCalledWith(["new@example.net"], "s", "<p>b</p>", expect.anything());
       expect(existsSync(join(logDir, "sends.jsonl"))).toBe(false);
     });
 

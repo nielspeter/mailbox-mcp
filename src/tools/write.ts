@@ -1,3 +1,4 @@
+import { composeBody, htmlSchema } from "./body.js";
 import { registerTool, lookupAccount, type ToolContext, type ToolResult } from "./registry.js";
 import { loadAttachments } from "../security/attachment-loader.js";
 import { checkOutgoing } from "../security/send-guard.js";
@@ -151,7 +152,7 @@ registerTool(
         from: fromSchema,
         cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
-        html: { type: "boolean", description: "Send as HTML (default false)" },
+        html: htmlSchema,
         attachments: attachmentsSchema,
         confirm_new_recipient: confirmNewRecipientSchema,
       },
@@ -168,9 +169,8 @@ registerTool(
     const attachmentPaths = strings(args.attachments);
     const attachments = loadAttachments(attachmentPaths);
     const subject = stripFencing(args.subject as string);
-    const body = stripFencing(args.body as string);
+    const { body, html } = composeBody(stripFencing(args.body as string), args.html);
     const from = args.from as string | undefined;
-    const html = args.html as boolean | undefined;
     const options = {
       from,
       cc: cc.length ? cc : undefined, bcc: bcc.length ? bcc : undefined, html,
@@ -206,7 +206,7 @@ registerTool(
         reply_all: { type: "boolean", description: "Reply to all recipients (default false)" },
         cc: { type: "array", items: { type: "string" }, description: "Additional CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "Additional BCC recipients" },
-        html: { type: "boolean", description: "Send as HTML (default false)" },
+        html: htmlSchema,
         attachments: attachmentsSchema,
         confirm_new_recipient: confirmNewRecipientSchema,
       },
@@ -225,9 +225,8 @@ registerTool(
     if (isRefusal(gate)) return gate;
     const attachmentPaths = strings(args.attachments);
     const attachments = loadAttachments(attachmentPaths);
-    const body = stripFencing(args.body as string);
+    const { body, html } = composeBody(stripFencing(args.body as string), args.html);
     const from = args.from as string | undefined;
-    const html = args.html as boolean | undefined;
     if (gate.draftsOnly) {
       const id = await gate.provider.createDraft(derived, stripFencing(original.subject), body, {
         from,
@@ -323,7 +322,7 @@ registerTool(
         from: fromSchema,
         cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
-        html: { type: "boolean", description: "Send as HTML (default false)" },
+        html: htmlSchema,
         in_reply_to: { type: "string", description: "Message ID (from search results) to reply to: the draft gets In-Reply-To/References and a Re: subject, so it lands in that thread" },
         attachments: attachmentsSchema,
       },
@@ -338,10 +337,11 @@ registerTool(
     const gate = await gateOutgoing(args, ctx, { account, recipients: [...to, ...cc, ...bcc], draftOnly: true });
     if (isRefusal(gate)) return gate;
     const attachments = loadAttachments(args.attachments as string[] | undefined);
-    const id = await gate.provider.createDraft(to, stripFencing(args.subject as string), stripFencing(args.body as string), {
+    const { body, html } = composeBody(stripFencing(args.body as string), args.html);
+    const id = await gate.provider.createDraft(to, stripFencing(args.subject as string), body, {
       from: args.from as string | undefined,
       cc: cc.length ? cc : undefined, bcc: bcc.length ? bcc : undefined,
-      html: args.html as boolean | undefined, inReplyTo: args.in_reply_to as string | undefined,
+      html, inReplyTo: args.in_reply_to as string | undefined,
       attachments,
     });
     return { content: [{ type: "text", text: `Draft created. Draft ID: ${id}` }] };
