@@ -30,19 +30,26 @@ function base64Wrap(data: Buffer): string {
   return lines.join("\r\n");
 }
 
+function quoteParameter(value: string): string {
+  return `"${value.replace(/[\\"]/g, "\\$&")}"`;
+}
+
 /**
- * Encode a header parameter value using RFC 2047 (Q-encoding) when it
- * contains non-ASCII characters — needed so international filenames
- * survive through to the recipient.
+ * Attachment name parameters. A printable-ASCII name is quoted as-is. Any
+ * other name gets RFC 2231 `filename*=UTF-8''…` (what current clients,
+ * Gmail included, read) plus a quoted RFC 2047 word in `name`/`filename`
+ * for older ones. An unquoted encoded word is not a valid parameter value,
+ * so clients dropped the name and showed the file as part of the body.
  */
-function encodeHeaderParameter(value: string): string {
+function attachmentNameParameters(filename: string): { contentType: string; disposition: string } {
   // eslint-disable-next-line no-control-regex
-  if (/^[\x20-\x7e]*$/.test(value) && !/[=?"]/.test(value)) {
-    return `"${value}"`;
+  if (/^[\x20-\x7e]*$/.test(filename)) {
+    const quoted = quoteParameter(filename);
+    return { contentType: `name=${quoted}`, disposition: `filename=${quoted}` };
   }
-  const encoded = Buffer.from(value, "utf-8")
-    .toString("base64");
-  return `=?utf-8?B?${encoded}?=`;
+  const word = quoteParameter(`=?utf-8?B?${Buffer.from(filename, "utf-8").toString("base64")}?=`);
+  const extended = encodeURIComponent(filename).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return { contentType: `name=${word}`, disposition: `filename=${word}; filename*=UTF-8''${extended}` };
 }
 
 /**
@@ -149,11 +156,11 @@ export function buildRawMimeMessage(opts: BuildMimeOptions): Buffer {
 
   for (const att of opts.attachments!) {
     const safeName = stripCRLF(att.filename);
-    const nameParam = encodeHeaderParameter(safeName);
+    const name = attachmentNameParameters(safeName);
     parts.push(`--${boundary}`);
-    parts.push(`Content-Type: ${att.mimeType}; name=${nameParam}`);
+    parts.push(`Content-Type: ${att.mimeType}; ${name.contentType}`);
     parts.push("Content-Transfer-Encoding: base64");
-    parts.push(`Content-Disposition: attachment; filename=${nameParam}`);
+    parts.push(`Content-Disposition: attachment; ${name.disposition}`);
     parts.push("");
     parts.push(base64Wrap(att.data));
   }

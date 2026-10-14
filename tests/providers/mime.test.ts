@@ -90,3 +90,31 @@ describe("buildRawMimeMessage address headers", () => {
     expect(toLine).toContain("=?utf-8?B?");
   });
 });
+
+describe("attachment filenames", () => {
+  const build = (filename: string) =>
+    buildRawMimeMessage({
+      from: "me@example.com", to: ["you@example.com"], subject: "s", body: "b",
+      attachments: [{ filename, mimeType: "text/plain", data: Buffer.from("x") }],
+    }).toString();
+
+  it("quotes a plain ASCII name", () => {
+    const raw = build("report.pdf");
+    expect(raw).toContain('Content-Type: text/plain; name="report.pdf"');
+    expect(raw).toContain('Content-Disposition: attachment; filename="report.pdf"');
+  });
+
+  it("escapes quotes and backslashes in an ASCII name", () => {
+    expect(build('a "b" \\c.txt')).toContain('filename="a \\"b\\" \\\\c.txt"');
+  });
+
+  it("gives a non-ASCII name RFC 2231 filename* and a quoted RFC 2047 fallback", () => {
+    const raw = build("Årsrapport bemærkninger.pdf");
+    const word = `=?utf-8?B?${Buffer.from("Årsrapport bemærkninger.pdf").toString("base64")}?=`;
+    expect(raw).toContain(`Content-Type: text/plain; name="${word}"`);
+    expect(raw).toContain(
+      `Content-Disposition: attachment; filename="${word}"; filename*=UTF-8''%C3%85rsrapport%20bem%C3%A6rkninger.pdf`,
+    );
+    expect(raw).not.toMatch(/filename==\?/);
+  });
+});
