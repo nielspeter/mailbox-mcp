@@ -3,6 +3,7 @@ import type { MailProvider, ProviderCapabilities } from "../providers/interface.
 import type { AccountConfig, AccountManager } from "../accounts.js";
 import { ResponseFence } from "../security/sanitize.js";
 import { noteSenders } from "../security/taint.js";
+import { getPermissionsState, unavailableText } from "../permissions.js";
 
 export interface ToolContext {
   accountManager: AccountManager;
@@ -148,6 +149,8 @@ function profileRefusal(name: string, profile: ToolProfile): ToolResult {
 }
 
 export function getAllToolDefinitions(): Tool[] {
+  // A broken project permissions file fails closed: no tools at all.
+  if (getPermissionsState().kind === "error") return [];
   const profile = activeProfile();
   return tools
     .filter((t) => isToolEnabled(t.definition.name) && isAllowedByProfile(t.definition.name, profile))
@@ -178,6 +181,12 @@ export async function handleToolCall(
   args: Record<string, unknown>,
   input: ToolContextInput
 ): Promise<ToolResult> {
+  // First check: a broken project permissions file refuses every call before
+  // the tool lookup, the other gates or any account access.
+  const permissions = getPermissionsState();
+  if (permissions.kind === "error") {
+    return { content: [{ type: "text", text: unavailableText(permissions.message) }], isError: true };
+  }
   const ctx: ToolContext = { ...input, fence: input.fence ?? new ResponseFence() };
   const tool = tools.find((t) => t.definition.name === name);
   if (!tool) {

@@ -28,6 +28,7 @@ This is [nielspeter/mailbox-mcp](https://github.com/nielspeter/mailbox-mcp), a f
 - **Whole threads over Gmail IMAP.** `read_thread` takes the id of any message in the thread, looks up its Gmail thread id (`X-GM-THRID`) and returns every message from All Mail, oldest first. On other IMAP servers it still refuses.
 - **Reply drafts land in the thread.** `create_draft` with `in_reply_to` (and `reply_email` on `draftsOnly` accounts) now sets `In-Reply-To`, `References` and a `Re:` subject on IMAP drafts. Before, they ignored the original and started a new conversation.
 - **HTML by default.** `create_draft`, `reply_email`, `send_email` and `update_draft` compose HTML unless `html: false`. A body written as plain text is escaped and converted (blank lines become paragraphs, newlines `<br>`). `forward_email` is unchanged.
+- **Project permissions file.** A project can carry `.mailbox-mcp/permissions.json`; see [Project permissions file](#project-permissions-file). This first version finds and checks the file and fails closed on a bad one; the rules that go in it come in later changes.
 - **Non-ASCII attachment filenames.** IMAP drafts and sends wrote names like `Årsrapport.pdf` as an unquoted encoded word, which is not a valid parameter value, so Gmail dropped the name. They now carry RFC 2231 `filename*=UTF-8''…` plus a quoted fallback.
 
 ## Security
@@ -307,6 +308,17 @@ Calls to tools in disabled groups fail with an error naming the group to enable.
 ```json
 "env": { "MAILBOX_MCP_PROFILE": "draft", "MAILBOX_MCP_TOOLS": "core,attachments" }
 ```
+
+### Project permissions file
+
+A project can carry rules for what Claude may see and do with mail there, in `.mailbox-mcp/permissions.json` at the project root, committed with the project. Personal account settings stay in `~/.mailbox-mcp/` and are never read as a project's rules; the two folders share a name but not a purpose.
+
+- **Where it is looked for.** From the folder the session started in (`$CLAUDE_PROJECT_DIR`, or the server's working folder) up to the nearest folder with a `.git` entry (a folder, or a file in a git worktree), and no further. A session started in a subfolder gets the project's file.
+- **No file:** nothing changes.
+- **This version knows no keys yet.** Later changes add them (a mail scope per project, tool rules). Until a key is supported, a file containing it is refused rather than ignored, because every key restricts something and ignoring one would quietly show more than the project meant to.
+- **A bad file fails closed, visibly.** The server stays up with **no tools**, refuses every call, and its instructions tell Claude that mail is unavailable, which file is wrong and why, and not to edit the file itself. Fix the file, then reconnect the server (`/mcp` → mailbox → reconnect) or start a new session; the file is only read when the server starts.
+- **What counts as bad:** a symbolic link, not a regular file, not owned by you, over 64 KB, empty, not valid JSON, not a JSON object, or keys this version doesn't know ("update the fork, or remove them"). Messages use these fixed words and never quote the file.
+- **What it is not:** a lock against a hijacked session, which could edit or delete the file. Hard limits belong in the server's environment (`MAILBOX_MCP_PROFILE`, `MAILBOX_MCP_TOOLS`).
 
 ## Inbox triage with Jev (optional)
 

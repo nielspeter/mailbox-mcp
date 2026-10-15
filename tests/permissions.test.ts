@@ -182,7 +182,7 @@ describe("parsing", () => {
     expect(message).toContain("4 keys this version doesn't know");
     expect(message).toContain("update the fork");
     expect(message).not.toContain(MARKER);
-    expect(message).not.toContain("mail");
+    expect(message).not.toMatch(/\bmail\b/);
   });
   it("hands known keys on in a null-prototype object", () => {
     const state = load(project('{"k": {"a": 1}}'), { known: ["k"] });

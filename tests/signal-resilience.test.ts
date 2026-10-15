@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 // The server is spawned inside the harness's controlling-terminal process
 // group, so terminal job-control signals (SIGHUP on terminal hangup, SIGINT on
@@ -12,6 +14,10 @@ import { dirname, join } from "node:path";
 // down on the harness's authoritative signal: stdin EOF.
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "server.js");
+// Isolated folders, so a real project or user permissions file can't change
+// what this test sees.
+const ISOLATED = mkdtempSync(join(tmpdir(), "mbx-signal-"));
+const ENV = { ...process.env, HOME: ISOLATED, CLAUDE_PROJECT_DIR: ISOLATED, MAILBOX_MCP_CONFIG_DIR: join(ISOLATED, ".mailbox-mcp") };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (p: ChildProcess) => p.exitCode === null && p.signalCode === null;
 
@@ -19,7 +25,7 @@ const alive = (p: ChildProcess) => p.exitCode === null && p.signalCode === null;
 // waiting for it (rather than a fixed sleep) means a cold start after a build
 // can't receive the signal before the handlers exist.
 async function startServer(): Promise<ChildProcess> {
-  const p = spawn(process.execPath, [SERVER], { stdio: ["pipe", "ignore", "pipe"] });
+  const p = spawn(process.execPath, [SERVER], { stdio: ["pipe", "ignore", "pipe"], env: ENV });
   await new Promise<void>((resolve, reject) => {
     let log = "";
     const timer = setTimeout(() => reject(new Error("server did not start within 4s")), 4000);
