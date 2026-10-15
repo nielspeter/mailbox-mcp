@@ -115,7 +115,8 @@ describe("finding the project file", () => {
   it("resolves a relative or unnormalised CLAUDE_PROJECT_DIR before walking", () => {
     const root = project("{");
     mkdirSync(join(root, "a", "b"), { recursive: true });
-    const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: join(root, "a", "x", "..", "b") }, cwd: "/", home: temp(), known: [] });
+    // A raw string: join() would normalise it before the code under test sees it.
+    const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: `${root}/a/x/../b` }, cwd: "/", home: temp(), known: [] });
     expect(errorOf(state)).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
   });
   it("never puts an absolute path in the message", () => {
