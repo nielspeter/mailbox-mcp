@@ -139,17 +139,18 @@ function hasEntry(p: string): boolean {
 export function loadProjectPermissions(input: LoadInput): PermissionsState {
   const fromEnv = !!input.env.CLAUDE_PROJECT_DIR;
   const start = resolve(input.env.CLAUDE_PROJECT_DIR || input.cwd);
+  const base = fromEnv ? "$CLAUDE_PROJECT_DIR" : "<cwd>";
   let root: string;
   try {
     root = findProjectRoot(start, hasEntry);
-  } catch {
-    const base = input.env.CLAUDE_PROJECT_DIR ? "$CLAUDE_PROJECT_DIR" : "<cwd>";
-    return { kind: "error", message: `${base}/.mailbox-mcp/permissions.json could not be read (a folder on the way up can't be read)` };
+  } catch (err) {
+    const code = err instanceof PermissionsFileError && err.code ? `: ${err.code}` : "";
+    return { kind: "error", message: `${base}/.mailbox-mcp/permissions.json could not be read (a folder on the way up can't be read${code})` };
   }
   const folder = join(root, ".mailbox-mcp");
   const up = relative(start, root);
   // Built from fixed text and ".." segments only: never an absolute path, never file content.
-  const displayPath = `${fromEnv ? "$CLAUDE_PROJECT_DIR" : "<cwd>"}/${up ? `${up}/` : ""}.mailbox-mcp/permissions.json`;
+  const displayPath = `${base}/${up ? `${up}/` : ""}.mailbox-mcp/permissions.json`;
   const fail = (words: string): PermissionsState => ({ kind: "error", message: `${displayPath} ${words}` });
 
   // A session started in ~ must not read the user's own config folder as a project's rules.

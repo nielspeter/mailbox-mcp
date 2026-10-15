@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -24,16 +24,15 @@ function temp(): string {
 // sources they depend on, instead of testing stale code.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 beforeAll(() => {
-  const pairs: Array<[string, string[]]> = [
-    ["dist/server.js", ["src/server.ts", "src/permissions.ts", "src/tools/registry.ts"]],
-    ["dist/permissions.js", ["src/permissions.ts"]],
-  ];
-  for (const [built, sources] of pairs) {
+  const newestSrc = Math.max(
+    ...readdirSync(join(ROOT, "src"), { recursive: true, withFileTypes: true })
+      .filter((d) => d.isFile())
+      .map((d) => statSync(join(d.parentPath, d.name)).mtimeMs),
+  );
+  for (const built of ["dist/server.js", "dist/permissions.js"]) {
     let builtAt = 0;
     try { builtAt = statSync(join(ROOT, built)).mtimeMs; } catch { throw new Error(`${built} is missing: run npm run build first`); }
-    for (const src of sources) {
-      if (statSync(join(ROOT, src)).mtimeMs > builtAt) throw new Error(`${built} is older than ${src}: run npm run build first`);
-    }
+    if (builtAt < newestSrc) throw new Error(`${built} is older than src/: run npm run build first`);
   }
 });
 
@@ -45,10 +44,13 @@ type Rpc = { id?: number; result?: any; error?: any };
 
 function startServer(projectDir: string | null, cwd?: string): { p: ChildProcess; home: string; stderr: () => string; request: (id: number, method: string, params?: object) => Promise<Rpc>; running: Promise<void> } {
   const home = temp();
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, MAILBOX_MCP_CONFIG_DIR: join(home, ".mailbox-mcp"), MAILBOX_MCP_PROFILE: "", MAILBOX_MCP_TOOLS: "" };
+  if (projectDir === null) delete env.CLAUDE_PROJECT_DIR;
+  else env.CLAUDE_PROJECT_DIR = projectDir;
   const p = spawn(process.execPath, [SERVER], {
     stdio: ["pipe", "pipe", "pipe"],
     cwd,
-    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: projectDir ?? "", MAILBOX_MCP_CONFIG_DIR: join(home, ".mailbox-mcp"), MAILBOX_MCP_PROFILE: "", MAILBOX_MCP_TOOLS: "" },
+    env,
   });
   let err = "";
   let out = "";

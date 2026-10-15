@@ -189,18 +189,23 @@ describe("finding the project file", () => {
     expect(errorOf(load(root))).toContain("is not valid JSON");
   });
   it("a CLAUDE_PROJECT_DIR that doesn't exist means no rules (by design; see plan 005)", () => {
-    const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: join(temp(), "gone", "away") }, cwd: "/", home: temp(), known: [] });
+    const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: join(project(), "gone", "away") }, cwd: "/", home: temp(), known: [] });
     expect(state.kind).toBe("none");
   });
-  it.skipIf(process.getuid?.() === 0)("fails closed when a folder on the way up can't be read", () => {
+  it.skipIf(process.getuid?.() === 0)("fails closed when a folder on the way up can't be read (skipped as root)", () => {
     const root = project("{}");
     mkdirSync(join(root, "locked", "inner"), { recursive: true });
     chmodSync(join(root, "locked"), 0);
     try {
-      expect(errorOf(load(root, { start: join(root, "locked", "inner") }))).toContain("a folder on the way up can't be read");
+      expect(errorOf(load(root, { start: join(root, "locked", "inner") }))).toContain("a folder on the way up can't be read: EACCES");
     } finally {
       chmodSync(join(root, "locked"), 0o700);
     }
+  });
+  it("a CLAUDE_PROJECT_DIR that is a file walks on (ENOTDIR is 'not there')", () => {
+    const root = project("{");
+    writeFileSync(join(root, "afile"), "");
+    expect(errorOf(load(root, { start: join(root, "afile") }))).toContain("$CLAUDE_PROJECT_DIR/../.mailbox-mcp/permissions.json");
   });
   it("no file means no rules", () => {
     expect(load(project()).kind).toBe("none");
@@ -225,7 +230,7 @@ describe("reading the file safely", () => {
     writeFileSync(join(root, ".mailbox-mcp"), "");
     expect(errorOf(load(root))).toContain("`.mailbox-mcp` is not a folder");
   });
-  it.skipIf(process.getuid?.() === 0)("refuses an unreadable file", () => {
+  it.skipIf(process.getuid?.() === 0)("refuses an unreadable file (skipped as root)", () => {
     const root = project("{}");
     chmodSync(join(root, ".mailbox-mcp", "permissions.json"), 0);
     expect(errorOf(load(root))).toContain("can't be read");
@@ -253,7 +258,7 @@ describe("reading the file safely", () => {
     expect(errorOf(load(project("")))).toContain("is empty");
     expect(load(project("{}")).kind).toBe("none");
   });
-  it("refuses a file owned by someone else", () => {
+  it.skipIf(typeof process.getuid !== "function")("refuses a file owned by someone else (skipped where process.getuid doesn't exist)", () => {
     const root = project("{}");
     vi.spyOn(process, "getuid").mockReturnValue((process.getuid?.() ?? 0) + 1);
     expect(errorOf(load(root))).toContain("is not owned by you");
@@ -315,6 +320,12 @@ describe("parsing", () => {
     expect(state.project.keys.k).toEqual({ a: 1 });
     expect(Object.getPrototypeOf(state.project.keys)).toBeNull();
     expect(state.project.displayPath).toBe("$CLAUDE_PROJECT_DIR/.mailbox-mcp/permissions.json");
+  });
+  it("JSON.parse's own error text never reaches the message", () => {
+    vi.spyOn(JSON, "parse").mockImplementation(() => { throw new SyntaxError(`bad ${MARKER}`); });
+    const message = errorOf(load(project("{}")));
+    expect(message).toContain("is not valid JSON");
+    expect(message).not.toContain(MARKER);
   });
   it("a reader error's own text never reaches the message", () => {
     const root = project("{}");
