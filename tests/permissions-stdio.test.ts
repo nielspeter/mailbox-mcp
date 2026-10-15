@@ -1,9 +1,18 @@
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, afterAll, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { getAllToolDefinitions } from "../src/tools/registry.js";
+import "../src/tools/account.js";
+import "../src/tools/read.js";
+import "../src/tools/write.js";
+import "../src/tools/manage.js";
+import "../src/tools/gmail-only.js";
+import "../src/tools/attachments.js";
+import "../src/tools/actions.js";
+import "../src/tools/export.js";
 
 // Runs the built server (npm run build first) with a bad project permissions
 // file and talks MCP to it over stdio. Every spawn gets its own HOME, project
@@ -25,11 +34,11 @@ afterAll(() => {
 
 type Rpc = { id?: number; result?: any; error?: any };
 
-function startServer(projectDir: string): { p: ChildProcess; stderr: () => string; request: (id: number, method: string, params?: object) => Promise<Rpc>; running: Promise<void> } {
+function startServer(projectDir: string): { p: ChildProcess; home: string; stderr: () => string; request: (id: number, method: string, params?: object) => Promise<Rpc>; running: Promise<void> } {
   const home = temp();
   const p = spawn(process.execPath, [SERVER], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: projectDir, MAILBOX_MCP_CONFIG_DIR: join(home, ".mailbox-mcp"), MAILBOX_MCP_PROFILE: "" },
+    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: projectDir, MAILBOX_MCP_CONFIG_DIR: join(home, ".mailbox-mcp"), MAILBOX_MCP_PROFILE: "", MAILBOX_MCP_TOOLS: "" },
   });
   let err = "";
   let out = "";
@@ -60,7 +69,7 @@ function startServer(projectDir: string): { p: ChildProcess; stderr: () => strin
       waiting.set(id, (r) => { clearTimeout(timer); resolve(r); });
       p.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     });
-  return { p, stderr: () => err, request, running };
+  return { p, home, stderr: () => err, request, running };
 }
 
 describe("server with a bad project permissions file", () => {
@@ -83,6 +92,7 @@ describe("server with a bad project permissions file", () => {
       expect(instructions).toContain("$CLAUDE_PROJECT_DIR/.mailbox-mcp/permissions.json is not valid JSON");
       expect(instructions).not.toContain("UNTRUSTED");
       expect(instructions).not.toContain(MARKER);
+      expect(instructions).not.toContain(project);
 
       s.p.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
       const list = await s.request(2, "tools/list");
@@ -90,6 +100,9 @@ describe("server with a bad project permissions file", () => {
 
       expect(s.stderr()).toContain("mail unavailable");
       expect(s.stderr()).not.toContain(MARKER);
+      const debugLog = readFileSync(join(s.home, ".mailbox-mcp", "debug.log"), "utf8");
+      expect(debugLog).toContain("permissions-error");
+      expect(debugLog).not.toContain(MARKER);
       expect(s.p.exitCode).toBeNull();
     } finally {
       s.p.kill("SIGKILL");
@@ -104,7 +117,10 @@ describe("server with a bad project permissions file", () => {
       await s.running;
       await s.request(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } });
       const list = await s.request(2, "tools/list");
-      expect(list.result?.tools.length).toBe(49);
+      vi.stubEnv("MAILBOX_MCP_PROFILE", "");
+      vi.stubEnv("MAILBOX_MCP_TOOLS", "");
+      expect(list.result?.tools.length).toBe(getAllToolDefinitions().length);
+      vi.unstubAllEnvs();
     } finally {
       s.p.kill("SIGKILL");
     }

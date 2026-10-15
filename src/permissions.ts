@@ -9,8 +9,8 @@
 // Nothing from the file, and no exception text, ever reaches a message: every
 // failure has fixed words, and keys are only counted, never named.
 
-import { closeSync, constants, existsSync, fstatSync, openSync, readSync, realpathSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 
 export type ProjectRules = { displayPath: string; root: string; keys: Record<string, unknown> };
 
@@ -55,7 +55,7 @@ export function resolveConfigDir(env: NodeJS.ProcessEnv, home: string): string {
 function kindForCode(code: string | undefined): string {
   switch (code) {
     case "ELOOP": return "is a symbolic link";
-    case "ENOTDIR": return "`.mailbox-mcp` is not a folder";
+    case "ENOTDIR": return "can't be reached (`.mailbox-mcp` is not a folder)";
     case "EISDIR": return "is a folder";
     case "EACCES":
     case "EPERM": return "can't be read";
@@ -68,12 +68,22 @@ function kindForCode(code: string | undefined): string {
  * owned by the current user, at most MAX_PERMISSIONS_BYTES, leading BOM removed.
  * Throws PermissionsFileError with fixed words; `code` is "ENOENT" for a missing file.
  */
-export function readSafeFile(path: string): string {
-  const noFollow = constants.O_NOFOLLOW;
-  if (noFollow === undefined) throw new PermissionsFileError("can't be checked for symbolic links on this platform");
+export function readSafeFile(path: string, fsConstants: { O_RDONLY: number; O_NOFOLLOW?: number; O_NONBLOCK?: number } = constants): string {
+  const noFollow = fsConstants.O_NOFOLLOW;
+  if (noFollow === undefined) {
+    // No O_NOFOLLOW (Windows): a missing file is still "no rules"; an existing
+    // one is refused, since it can't be opened without following a link.
+    try {
+      lstatSync(path);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      throw new PermissionsFileError(code === "ENOENT" ? "does not exist" : kindForCode(code), code);
+    }
+    throw new PermissionsFileError("can't be checked for symbolic links on this platform");
+  }
   let fd: number;
   try {
-    fd = openSync(path, constants.O_RDONLY | noFollow | (constants.O_NONBLOCK ?? 0));
+    fd = openSync(path, fsConstants.O_RDONLY | noFollow | (fsConstants.O_NONBLOCK ?? 0));
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     throw new PermissionsFileError(code === "ENOENT" ? "does not exist" : kindForCode(code), code);
@@ -110,19 +120,24 @@ function sameFolder(a: string, b: string): boolean {
   }
 }
 
-function stripControl(s: string): string {
-  return s.replace(/[\u0000-\u001f\u007f]/g, "");
+// lstat, not exists: a .git entry of any type counts, a dangling symlink included.
+function hasEntry(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function loadProjectPermissions(input: LoadInput): PermissionsState {
   const fromEnv = !!input.env.CLAUDE_PROJECT_DIR;
-  const start = input.env.CLAUDE_PROJECT_DIR || input.cwd;
-  const root = findProjectRoot(start, existsSync);
+  const start = resolve(input.env.CLAUDE_PROJECT_DIR || input.cwd);
+  const root = findProjectRoot(start, hasEntry);
   const folder = join(root, ".mailbox-mcp");
   const up = relative(start, root);
-  const displayPath = stripControl(
-    `${fromEnv ? "$CLAUDE_PROJECT_DIR" : "<cwd>"}/${up ? `${up}/` : ""}.mailbox-mcp/permissions.json`,
-  );
+  // Built from fixed text and ".." segments only: never an absolute path, never file content.
+  const displayPath = `${fromEnv ? "$CLAUDE_PROJECT_DIR" : "<cwd>"}/${up ? `${up}/` : ""}.mailbox-mcp/permissions.json`;
   const fail = (words: string): PermissionsState => ({ kind: "error", message: `${displayPath} ${words}` });
 
   // A session started in ~ must not read the user's own config folder as a project's rules.
@@ -158,7 +173,7 @@ export function loadProjectPermissions(input: LoadInput): PermissionsState {
 }
 
 export function unavailableText(message: string): string {
-  return `Mail is unavailable in this project: ${message}. Tell the user. Do not edit or delete that file yourself; the user fixes it, then reconnects the mailbox server (/mcp → mailbox → reconnect) or starts a new session.`;
+  return `Mail is unavailable in this project: ${message} ($CLAUDE_PROJECT_DIR and <cwd> mean the folder this session started in). Tell the user. Do not edit or delete that file unless the user asks you to in their own message; once it is fixed, the user reconnects the mailbox server (/mcp → mailbox → reconnect) or starts a new session.`;
 }
 
 export function buildInstructions(state: PermissionsState, normal: string): string {
@@ -167,6 +182,9 @@ export function buildInstructions(state: PermissionsState, normal: string): stri
   return normal;
 }
 
+// Default "none" so CLI mode and tests behave as before. Every entry point that
+// serves tools must call initProjectPermissions first, or it runs without the
+// project's rules.
 let current: PermissionsState = { kind: "none" };
 
 export function setPermissionsState(state: PermissionsState): void {
@@ -179,4 +197,28 @@ export function getPermissionsState(): PermissionsState {
 
 export function resetPermissions(): void {
   current = { kind: "none" };
+}
+
+/**
+ * Load the project's file at server start and install the state. Never throws:
+ * anything unexpected becomes the error state with fixed words. `log` receives
+ * fixed text only.
+ */
+export function initProjectPermissions(input: Omit<LoadInput, "read">, log: (kind: string, detail: string) => void): PermissionsState {
+  let state: PermissionsState;
+  try {
+    state = loadProjectPermissions(input);
+  } catch (err) {
+    state = { kind: "error", message: "the project's .mailbox-mcp/permissions.json could not be read" };
+    log("permissions-error", `unexpected ${(err as NodeJS.ErrnoException)?.code ?? (err as Error)?.name ?? "error"}`);
+  }
+  setPermissionsState(state);
+  if (state.kind === "error") {
+    console.error(`mailbox-mcp: mail unavailable: ${state.message}`);
+    log("permissions-error", state.message);
+  } else if (state.kind === "rules" && state.warnings.length > 0) {
+    console.error(`mailbox-mcp: ${state.warnings.join(" ")}`);
+    log("permissions-warning", state.warnings.join(" "));
+  }
+  return state;
 }

@@ -15,7 +15,7 @@ import { createProvider } from "./provider-factory.js";
 import { activeProfile, getAllToolDefinitions, handleToolCall, type ToolProfile } from "./tools/registry.js";
 import type { MailProvider } from "./providers/interface.js";
 import { redactTokens } from "./security/sanitize.js";
-import { buildInstructions, loadProjectPermissions, setPermissionsState, type PermissionsState } from "./permissions.js";
+import { buildInstructions, initProjectPermissions } from "./permissions.js";
 
 // Lightweight lifecycle log so silent disconnects leave a paper trail.
 // Lives in ~/.mailbox-mcp/debug.log with a 1MB rotation cap.
@@ -72,23 +72,9 @@ try {
   process.exit(1);
 }
 
-// The project's .mailbox-mcp/permissions.json. A bad file is not fatal: the
-// server keeps running with no tools, and the instructions say why. Messages
-// carry fixed words only, never file content or exception text.
-let permissions: PermissionsState;
-try {
-  permissions = loadProjectPermissions({ env: process.env, cwd: process.cwd(), home: homedir(), known: [] });
-} catch (err) {
-  permissions = { kind: "error", message: "$CLAUDE_PROJECT_DIR/.mailbox-mcp/permissions.json could not be read" };
-  logEvent("permissions-error", `unexpected ${(err as NodeJS.ErrnoException)?.code ?? (err as Error)?.name ?? "error"}`);
-}
-setPermissionsState(permissions);
-if (permissions.kind === "error") {
-  console.error(`mailbox-mcp: mail unavailable: ${permissions.message}`);
-  logEvent("permissions-error", permissions.message);
-} else if (permissions.kind === "rules" && permissions.warnings.length > 0) {
-  logEvent("permissions-warning", permissions.warnings.join(" "));
-}
+// The project's .mailbox-mcp/permissions.json: a bad file leaves the server up
+// with no tools and instructions that say why.
+const permissions = initProjectPermissions({ env: process.env, cwd: process.cwd(), home: homedir(), known: [] }, logEvent);
 
 function readPackageVersion(): string {
   try {
