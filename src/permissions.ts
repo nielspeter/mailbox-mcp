@@ -31,6 +31,7 @@ export class PermissionsFileError extends Error {
 
 export interface LoadInput {
   env: NodeJS.ProcessEnv;
+  /** The server's folder; only used when CLAUDE_PROJECT_DIR is unset or empty. */
   cwd: string;
   home: string;
   known: readonly string[];
@@ -122,19 +123,29 @@ function sameFolder(a: string, b: string): boolean {
 }
 
 // lstat, not exists: a .git entry of any type counts, a dangling symlink included.
+// Only "not there" means false; anything else (EACCES, ...) is thrown, so the
+// caller fails closed rather than walking past a folder it couldn't look in.
 function hasEntry(p: string): boolean {
   try {
     lstatSync(p);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw new PermissionsFileError("could not be read", code);
   }
 }
 
 export function loadProjectPermissions(input: LoadInput): PermissionsState {
   const fromEnv = !!input.env.CLAUDE_PROJECT_DIR;
   const start = resolve(input.env.CLAUDE_PROJECT_DIR || input.cwd);
-  const root = findProjectRoot(start, hasEntry);
+  let root: string;
+  try {
+    root = findProjectRoot(start, hasEntry);
+  } catch {
+    const base = input.env.CLAUDE_PROJECT_DIR ? "$CLAUDE_PROJECT_DIR" : "<cwd>";
+    return { kind: "error", message: `${base}/.mailbox-mcp/permissions.json could not be read (a folder on the way up can't be read)` };
+  }
   const folder = join(root, ".mailbox-mcp");
   const up = relative(start, root);
   // Built from fixed text and ".." segments only: never an absolute path, never file content.
@@ -221,22 +232,19 @@ export function startupInput(
  */
 export function initProjectPermissions(getInput: () => Omit<LoadInput, "read">, log: (kind: string, detail: string) => void): PermissionsState {
   let state: PermissionsState;
+  let detail = "";
   try {
     // getInput runs inside the try: process.cwd() throws when the session's
     // folder was deleted, and that must become the error state, not a crash.
     state = loadProjectPermissions(getInput());
   } catch (err) {
     state = { kind: "error", message: "the project's .mailbox-mcp/permissions.json could not be read" };
-    const code = (err as NodeJS.ErrnoException)?.code ?? (err as Error)?.name ?? "error";
-    setPermissionsState(state);
-    console.error(`mailbox-mcp: mail unavailable: ${state.message}`);
-    log("permissions-error", `${state.message} (unexpected ${code})`);
-    return state;
+    detail = ` (unexpected ${(err as NodeJS.ErrnoException)?.code ?? (err as Error)?.name ?? "error"})`;
   }
   setPermissionsState(state);
   if (state.kind === "error") {
     console.error(`mailbox-mcp: mail unavailable: ${state.message}`);
-    log("permissions-error", state.message);
+    log("permissions-error", state.message + detail);
   } else if (state.kind === "rules" && state.warnings.length > 0) {
     console.error(`mailbox-mcp: ${state.warnings.join(" ")}`);
     log("permissions-warning", state.warnings.join(" "));

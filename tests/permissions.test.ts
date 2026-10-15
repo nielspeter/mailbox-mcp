@@ -1,9 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, chmodSync, rmSync, lstatSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import {
   buildInstructions,
   findProjectRoot,
@@ -27,7 +25,9 @@ import "../src/tools/attachments.js";
 import "../src/tools/actions.js";
 import "../src/tools/export.js";
 
-const MARKER = "PLANTED_MARKER_7f3a";
+// Short on purpose: V8's JSON error text quotes only a few characters around the
+// bad token, so a long marker would never appear in it even if it leaked.
+const MARKER = "QZ7K";
 const temps: string[] = [];
 
 function temp(): string {
@@ -114,13 +114,6 @@ describe("finding the project file", () => {
     mkdirSync(join(root, "a", "b"), { recursive: true });
     expect(errorOf(load(root, { start: join(root, "a", "b") }))).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
   });
-  it("an unnormalised CLAUDE_PROJECT_DIR finds the same root (documentation; the \".\" test pins resolve())", () => {
-    const root = project("{");
-    mkdirSync(join(root, "a", "b"), { recursive: true });
-    // A raw string: join() would normalise it before the code under test sees it.
-    const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: `${root}/a/x/../b` }, cwd: "/", home: temp(), known: [] });
-    expect(errorOf(state)).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
-  });
   it("walks up from CLAUDE_PROJECT_DIR=\".\" (dirname(\".\") is \".\", so it must be resolved first)", () => {
     const root = project("{");
     mkdirSync(join(root, "a", "b"), { recursive: true });
@@ -188,6 +181,27 @@ describe("finding the project file", () => {
     symlinkSync(join(home, ".mailbox-mcp"), join(root, ".mailbox-mcp"));
     expect(load(root, { home }).kind).toBe("none");
   });
+  it("reads the file through a symlinked .mailbox-mcp folder (accepted by design)", () => {
+    const elsewhere = temp();
+    writeFileSync(join(elsewhere, "permissions.json"), "{");
+    const root = project();
+    symlinkSync(elsewhere, join(root, ".mailbox-mcp"));
+    expect(errorOf(load(root))).toContain("is not valid JSON");
+  });
+  it("a CLAUDE_PROJECT_DIR that doesn't exist means no rules (by design; see plan 005)", () => {
+    const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: join(temp(), "gone", "away") }, cwd: "/", home: temp(), known: [] });
+    expect(state.kind).toBe("none");
+  });
+  it.skipIf(process.getuid?.() === 0)("fails closed when a folder on the way up can't be read", () => {
+    const root = project("{}");
+    mkdirSync(join(root, "locked", "inner"), { recursive: true });
+    chmodSync(join(root, "locked"), 0);
+    try {
+      expect(errorOf(load(root, { start: join(root, "locked", "inner") }))).toContain("a folder on the way up can't be read");
+    } finally {
+      chmodSync(join(root, "locked"), 0o700);
+    }
+  });
   it("no file means no rules", () => {
     expect(load(project()).kind).toBe("none");
   });
@@ -239,10 +253,10 @@ describe("reading the file safely", () => {
     expect(errorOf(load(project("")))).toContain("is empty");
     expect(load(project("{}")).kind).toBe("none");
   });
-  // Needs a regular file owned by someone else; /etc/hosts is one on macOS and the CI runner.
-  const etcHostsForeign = (() => { try { const s = lstatSync("/etc/hosts"); return s.isFile() && s.uid !== process.getuid?.(); } catch { return false; } })();
-  it.skipIf(!etcHostsForeign)("refuses a file owned by someone else (SKIPPED when running as root or without /etc/hosts: then unproven here)", () => {
-    expect(() => readSafeFile("/etc/hosts")).toThrow("is not owned by you");
+  it("refuses a file owned by someone else", () => {
+    const root = project("{}");
+    vi.spyOn(process, "getuid").mockReturnValue((process.getuid?.() ?? 0) + 1);
+    expect(errorOf(load(root))).toContain("is not owned by you");
   });
   it("without O_NOFOLLOW: a missing file is still no rules, an existing one is refused", () => {
     const noNoFollow = { O_RDONLY: 0 };
@@ -337,6 +351,8 @@ describe("registry in the error state", () => {
   }) as unknown as ToolContext;
 
   it("lists no tools", () => {
+    vi.stubEnv("MAILBOX_MCP_TOOLS", "");
+    vi.stubEnv("MAILBOX_MCP_PROFILE", "");
     expect(getAllToolDefinitions().length).toBeGreaterThan(0);
     setPermissionsState({ kind: "error", message: "X is not valid JSON" });
     expect(getAllToolDefinitions()).toEqual([]);
@@ -362,6 +378,8 @@ describe("registry in the error state", () => {
     expect(result.content[0].text).toContain("Mail is unavailable in this project: X is not valid JSON");
   });
   it("is a guard: back to normal after reset", () => {
+    vi.stubEnv("MAILBOX_MCP_TOOLS", "");
+    vi.stubEnv("MAILBOX_MCP_PROFILE", "");
     setPermissionsState({ kind: "error", message: "x" });
     resetPermissions();
     expect(getPermissionsState()).toEqual({ kind: "none" });
@@ -380,6 +398,21 @@ describe("startupInput", () => {
   });
 });
 
+describe("startupInput with initProjectPermissions", () => {
+  const gone = () => { const e = new Error("gone") as NodeJS.ErrnoException; e.code = "ENOENT"; throw e; };
+  it("a deleted cwd doesn't take mail away when CLAUDE_PROJECT_DIR is set", () => {
+    const root = project();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const state = initProjectPermissions(() => startupInput({ CLAUDE_PROJECT_DIR: root }, gone, () => temp()), vi.fn());
+    expect(state.kind).toBe("none");
+  });
+  it("a deleted cwd without CLAUDE_PROJECT_DIR becomes the error state, not a crash", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const state = initProjectPermissions(() => startupInput({}, gone, () => temp()), vi.fn());
+    expect(state.kind).toBe("error");
+  });
+});
+
 describe("initProjectPermissions", () => {
   it("installs the error state and logs fixed text only", () => {
     const root = project(`{"x": ${MARKER}`);
@@ -395,11 +428,12 @@ describe("initProjectPermissions", () => {
   });
   it("never throws: an error while gathering its input (a deleted cwd) becomes the error state", () => {
     const log = vi.fn();
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const state = initProjectPermissions(() => { const e = new Error(`gone ${MARKER}`) as NodeJS.ErrnoException; e.code = "ENOENT"; throw e; }, log);
     expect(state).toEqual({ kind: "error", message: "the project's .mailbox-mcp/permissions.json could not be read" });
     expect(getPermissionsState()).toEqual(state);
     expect(log).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith("permissions-error", "the project's .mailbox-mcp/permissions.json could not be read (unexpected ENOENT)");
     expect(JSON.stringify(log.mock.calls)).not.toContain(MARKER);
   });

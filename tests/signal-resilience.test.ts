@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 // The server is spawned inside the harness's controlling-terminal process
@@ -17,6 +17,7 @@ const SERVER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "serv
 // Isolated folders, so a real project or user permissions file can't change
 // what this test sees.
 const ISOLATED = mkdtempSync(join(tmpdir(), "mbx-signal-"));
+mkdirSync(join(ISOLATED, ".git"));
 const ENV = { ...process.env, HOME: ISOLATED, CLAUDE_PROJECT_DIR: ISOLATED, MAILBOX_MCP_CONFIG_DIR: join(ISOLATED, ".mailbox-mcp"), MAILBOX_MCP_PROFILE: "", MAILBOX_MCP_TOOLS: "" };
 afterAll(() => rmSync(ISOLATED, { recursive: true, force: true }));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

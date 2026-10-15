@@ -1,7 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -11,7 +10,8 @@ import { dirname, join } from "node:path";
 // and config folders, so nothing real is read or written.
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "server.js");
-const MARKER = "PLANTED_MARKER_c41e";
+// Short: V8 quotes only a few characters around the bad JSON token.
+const MARKER = "QZ9K";
 const temps: string[] = [];
 
 function temp(): string {
@@ -43,11 +43,12 @@ afterAll(() => {
 
 type Rpc = { id?: number; result?: any; error?: any };
 
-function startServer(projectDir: string): { p: ChildProcess; home: string; stderr: () => string; request: (id: number, method: string, params?: object) => Promise<Rpc>; running: Promise<void> } {
+function startServer(projectDir: string | null, cwd?: string): { p: ChildProcess; home: string; stderr: () => string; request: (id: number, method: string, params?: object) => Promise<Rpc>; running: Promise<void> } {
   const home = temp();
   const p = spawn(process.execPath, [SERVER], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: projectDir, MAILBOX_MCP_CONFIG_DIR: join(home, ".mailbox-mcp"), MAILBOX_MCP_PROFILE: "", MAILBOX_MCP_TOOLS: "" },
+    cwd,
+    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: projectDir ?? "", MAILBOX_MCP_CONFIG_DIR: join(home, ".mailbox-mcp"), MAILBOX_MCP_PROFILE: "", MAILBOX_MCP_TOOLS: "" },
   });
   let err = "";
   let out = "";
@@ -124,6 +125,21 @@ describe("server with a bad project permissions file", () => {
     }
   }, 25000);
 
+  it("finds the file from the server's cwd when CLAUDE_PROJECT_DIR is unset", async () => {
+    const project = temp();
+    mkdirSync(join(project, ".git"));
+    mkdirSync(join(project, ".mailbox-mcp"));
+    writeFileSync(join(project, ".mailbox-mcp", "permissions.json"), "{");
+    const s = startServer(null, project);
+    try {
+      await s.running;
+      const init = await s.request(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } });
+      expect(init.result?.instructions).toContain("<cwd>/.mailbox-mcp/permissions.json is not valid JSON");
+    } finally {
+      s.p.kill("SIGKILL");
+    }
+  }, 25000);
+
   it("is a guard: without a file, tools are listed as before", async () => {
     const project = temp();
     mkdirSync(join(project, ".git"));
@@ -142,6 +158,7 @@ describe("server with a bad project permissions file", () => {
   }, 25000);
 });
 
+// Not a stdio test, but it runs the build like the ones above, so it lives here.
 describe("readSafeFile on a FIFO", () => {
   // In a child process with a timeout: a blocking open would hang this worker's
   // own thread, where a vitest timeout could never fire. Runs the build (Node
