@@ -1,6 +1,7 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -20,13 +21,20 @@ function temp(): string {
 }
 
 // These tests run the build. Fail loudly when it is missing or older than the
-// source, instead of testing stale code.
+// sources they depend on, instead of testing stale code.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 beforeAll(() => {
-  const srcDir = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
-  const newestSrc = Math.max(...readdirSync(srcDir, { recursive: true }).map((f) => statSync(join(srcDir, String(f))).mtimeMs));
-  let built = 0;
-  try { built = statSync(SERVER).mtimeMs; } catch { throw new Error("dist/server.js is missing: run npm run build first"); }
-  if (built < newestSrc) throw new Error("dist/ is older than src/: run npm run build first");
+  const pairs: Array<[string, string[]]> = [
+    ["dist/server.js", ["src/server.ts", "src/permissions.ts", "src/tools/registry.ts"]],
+    ["dist/permissions.js", ["src/permissions.ts"]],
+  ];
+  for (const [built, sources] of pairs) {
+    let builtAt = 0;
+    try { builtAt = statSync(join(ROOT, built)).mtimeMs; } catch { throw new Error(`${built} is missing: run npm run build first`); }
+    for (const src of sources) {
+      if (statSync(join(ROOT, src)).mtimeMs > builtAt) throw new Error(`${built} is older than ${src}: run npm run build first`);
+    }
+  }
 });
 
 afterAll(() => {
@@ -100,6 +108,11 @@ describe("server with a bad project permissions file", () => {
       const list = await s.request(2, "tools/list");
       expect(list.result?.tools).toEqual([]);
 
+      // The real entry point refuses a call by name too.
+      const call = await s.request(3, "tools/call", { name: "search_emails", arguments: { account: "nine", query: "x" } });
+      expect(call.result?.isError).toBe(true);
+      expect(call.result?.content?.[0]?.text).toContain("Mail is unavailable in this project");
+
       expect(s.stderr()).toContain("mail unavailable");
       expect(s.stderr()).not.toContain(MARKER);
       const debugLog = readFileSync(join(s.home, ".mailbox-mcp", "debug.log"), "utf8");
@@ -127,4 +140,20 @@ describe("server with a bad project permissions file", () => {
       s.p.kill("SIGKILL");
     }
   }, 25000);
+});
+
+describe("readSafeFile on a FIFO", () => {
+  // In a child process with a timeout: a blocking open would hang this worker's
+  // own thread, where a vitest timeout could never fire. Runs the build (Node
+  // 20 on CI can't load the TypeScript source directly).
+  it.skipIf(process.platform === "win32")("refuses it without hanging", () => {
+    const project = temp();
+    mkdirSync(join(project, ".mailbox-mcp"));
+    const fifo = join(project, ".mailbox-mcp", "permissions.json");
+    execFileSync("mkfifo", [fifo]);
+    const built = join(ROOT, "dist", "permissions.js");
+    const script = `import { readSafeFile } from ${JSON.stringify(built)}; try { readSafeFile(${JSON.stringify(fifo)}); console.log("read"); } catch (e) { console.log(e.kind); }`;
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { timeout: 5000, encoding: "utf8" });
+    expect(out.trim()).toBe("is not a regular file");
+  }, 10000);
 });

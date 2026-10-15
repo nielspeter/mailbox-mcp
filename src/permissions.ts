@@ -11,6 +11,7 @@
 
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { homedir } from "node:os";
 
 export type ProjectRules = { displayPath: string; root: string; keys: Record<string, unknown> };
 
@@ -200,10 +201,23 @@ export function resetPermissions(): void {
 }
 
 /**
+ * The server's input. cwd is only read when CLAUDE_PROJECT_DIR is unset: it
+ * throws when the session's folder was deleted, and an unneeded cwd must not
+ * take mail away.
+ */
+export function startupInput(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: () => string = () => process.cwd(),
+  home: () => string = homedir,
+): Omit<LoadInput, "read"> {
+  return { env, cwd: env.CLAUDE_PROJECT_DIR ? "" : cwd(), home: home(), known: [] };
+}
+
+/**
  * Load the project's file at server start and install the state. Never throws:
- * (warnings stay empty until a later plan adds keys that produce them)
- * anything unexpected becomes the error state with fixed words. `log` receives
- * fixed text only.
+ * anything unexpected, including an error while gathering the input, becomes
+ * the error state with fixed words. `log` receives fixed text only. (Warnings
+ * stay empty until a later plan adds keys that produce them.)
  */
 export function initProjectPermissions(getInput: () => Omit<LoadInput, "read">, log: (kind: string, detail: string) => void): PermissionsState {
   let state: PermissionsState;
@@ -213,7 +227,11 @@ export function initProjectPermissions(getInput: () => Omit<LoadInput, "read">, 
     state = loadProjectPermissions(getInput());
   } catch (err) {
     state = { kind: "error", message: "the project's .mailbox-mcp/permissions.json could not be read" };
-    log("permissions-error", `unexpected ${(err as NodeJS.ErrnoException)?.code ?? (err as Error)?.name ?? "error"}`);
+    const code = (err as NodeJS.ErrnoException)?.code ?? (err as Error)?.name ?? "error";
+    setPermissionsState(state);
+    console.error(`mailbox-mcp: mail unavailable: ${state.message}`);
+    log("permissions-error", `${state.message} (unexpected ${code})`);
+    return state;
   }
   setPermissionsState(state);
   if (state.kind === "error") {

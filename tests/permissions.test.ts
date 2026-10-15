@@ -10,6 +10,7 @@ import {
   getPermissionsState,
   initProjectPermissions,
   loadProjectPermissions,
+  startupInput,
   readSafeFile,
   resetPermissions,
   resolveConfigDir,
@@ -113,23 +114,17 @@ describe("finding the project file", () => {
     mkdirSync(join(root, "a", "b"), { recursive: true });
     expect(errorOf(load(root, { start: join(root, "a", "b") }))).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
   });
-  it("resolves a relative or unnormalised CLAUDE_PROJECT_DIR before walking", () => {
+  it("an unnormalised CLAUDE_PROJECT_DIR finds the same root (documentation; the \".\" test pins resolve())", () => {
     const root = project("{");
     mkdirSync(join(root, "a", "b"), { recursive: true });
     // A raw string: join() would normalise it before the code under test sees it.
     const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: `${root}/a/x/../b` }, cwd: "/", home: temp(), known: [] });
     expect(errorOf(state)).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
   });
-  it("resolves a relative CLAUDE_PROJECT_DIR against the server's folder", () => {
-    const root = project("{");
-    mkdirSync(join(root, "a", "b"), { recursive: true });
-    const rel = relative(process.cwd(), join(root, "a", "b"));
-    const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: rel }, cwd: process.cwd(), home: temp(), known: [] });
-    expect(errorOf(state)).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
-  });
   it("walks up from CLAUDE_PROJECT_DIR=\".\" (dirname(\".\") is \".\", so it must be resolved first)", () => {
     const root = project("{");
     mkdirSync(join(root, "a", "b"), { recursive: true });
+    // process.chdir needs vitest's default "forks" pool; it throws under "threads".
     const before = process.cwd();
     process.chdir(join(root, "a", "b"));
     try {
@@ -211,19 +206,6 @@ describe("reading the file safely", () => {
     mkdirSync(join(root, ".mailbox-mcp", "permissions.json"), { recursive: true });
     expect(errorOf(load(root))).toContain("is a folder");
   });
-  it.skipIf(process.platform === "win32")("refuses a FIFO without hanging", () => {
-    const root = project();
-    mkdirSync(join(root, ".mailbox-mcp"));
-    const fifo = join(root, ".mailbox-mcp", "permissions.json");
-    execFileSync("mkfifo", [fifo]);
-    // In a child process with a timeout: a blocking open would hang this
-    // worker's own thread, where a vitest timeout could never fire.
-    // Loads the TypeScript source directly (Node 22.7+), so no build is needed.
-    const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "permissions.ts");
-    const script = `import { readSafeFile } from ${JSON.stringify(src)}; try { readSafeFile(${JSON.stringify(fifo)}); console.log("read"); } catch (e) { console.log(e.kind); }`;
-    const out = execFileSync(process.execPath, ["--experimental-transform-types", "--no-warnings", "--input-type=module", "-e", script], { timeout: 5000, encoding: "utf8" });
-    expect(out.trim()).toBe("is not a regular file");
-  }, 10000);
   it("refuses .mailbox-mcp being a file", () => {
     const root = project();
     writeFileSync(join(root, ".mailbox-mcp"), "");
@@ -241,8 +223,9 @@ describe("reading the file safely", () => {
   it("strips a leading BOM", () => {
     expect(load(project('\uFEFF{"k": 1}'), { known: ["k"] }).kind).toBe("rules");
   });
-  it("refuses a whitespace-only file as empty", () => {
+  it("refuses a whitespace-only or BOM-only file as empty", () => {
     expect(errorOf(load(project("  \n ")))).toContain("is empty");
+    expect(errorOf(load(project("\uFEFF")))).toContain("is empty");
   });
   it("refuses a dangling symlink as a symbolic link, not as no file", () => {
     const root = project();
@@ -258,7 +241,7 @@ describe("reading the file safely", () => {
   });
   // Needs a regular file owned by someone else; /etc/hosts is one on macOS and the CI runner.
   const etcHostsForeign = (() => { try { const s = lstatSync("/etc/hosts"); return s.isFile() && s.uid !== process.getuid?.(); } catch { return false; } })();
-  it.skipIf(!etcHostsForeign)("refuses a file owned by someone else", () => {
+  it.skipIf(!etcHostsForeign)("refuses a file owned by someone else (SKIPPED when running as root or without /etc/hosts: then unproven here)", () => {
     expect(() => readSafeFile("/etc/hosts")).toThrow("is not owned by you");
   });
   it("without O_NOFOLLOW: a missing file is still no rules, an existing one is refused", () => {
@@ -386,6 +369,17 @@ describe("registry in the error state", () => {
   });
 });
 
+describe("startupInput", () => {
+  const gone = () => { const e = new Error("gone") as NodeJS.ErrnoException; e.code = "ENOENT"; throw e; };
+  it("doesn't read cwd when CLAUDE_PROJECT_DIR is set (a deleted cwd must not take mail away)", () => {
+    expect(startupInput({ CLAUDE_PROJECT_DIR: "/p" }, gone, () => "/h")).toEqual({ env: { CLAUDE_PROJECT_DIR: "/p" }, cwd: "", home: "/h", known: [] });
+  });
+  it("reads cwd when CLAUDE_PROJECT_DIR is unset or empty", () => {
+    expect(startupInput({}, () => "/c", () => "/h").cwd).toBe("/c");
+    expect(startupInput({ CLAUDE_PROJECT_DIR: "" }, () => "/c", () => "/h").cwd).toBe("/c");
+  });
+});
+
 describe("initProjectPermissions", () => {
   it("installs the error state and logs fixed text only", () => {
     const root = project(`{"x": ${MARKER}`);
@@ -405,7 +399,8 @@ describe("initProjectPermissions", () => {
     const state = initProjectPermissions(() => { const e = new Error(`gone ${MARKER}`) as NodeJS.ErrnoException; e.code = "ENOENT"; throw e; }, log);
     expect(state).toEqual({ kind: "error", message: "the project's .mailbox-mcp/permissions.json could not be read" });
     expect(getPermissionsState()).toEqual(state);
-    expect(log).toHaveBeenCalledWith("permissions-error", "unexpected ENOENT");
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith("permissions-error", "the project's .mailbox-mcp/permissions.json could not be read (unexpected ENOENT)");
     expect(JSON.stringify(log.mock.calls)).not.toContain(MARKER);
   });
 });

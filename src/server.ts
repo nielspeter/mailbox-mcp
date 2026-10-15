@@ -15,7 +15,7 @@ import { createProvider } from "./provider-factory.js";
 import { activeProfile, getAllToolDefinitions, handleToolCall, type ToolProfile } from "./tools/registry.js";
 import type { MailProvider } from "./providers/interface.js";
 import { redactTokens } from "./security/sanitize.js";
-import { buildInstructions, initProjectPermissions } from "./permissions.js";
+import { buildInstructions, initProjectPermissions, startupInput } from "./permissions.js";
 
 // Lightweight lifecycle log so silent disconnects leave a paper trail.
 // Lives in ~/.mailbox-mcp/debug.log with a 1MB rotation cap.
@@ -74,7 +74,7 @@ try {
 
 // The project's .mailbox-mcp/permissions.json: a bad file leaves the server up
 // with no tools and instructions that say why.
-const permissions = initProjectPermissions(() => ({ env: process.env, cwd: process.cwd(), home: homedir(), known: [] }), logEvent);
+const permissions = initProjectPermissions(startupInput, logEvent);
 
 function readPackageVersion(): string {
   try {
