@@ -74,7 +74,7 @@ try {
 
 // The project's .mailbox-mcp/permissions.json: a bad file leaves the server up
 // with no tools and instructions that say why.
-const permissions = initProjectPermissions({ env: process.env, cwd: process.cwd(), home: homedir(), known: [] }, logEvent);
+const permissions = initProjectPermissions(() => ({ env: process.env, cwd: process.cwd(), home: homedir(), known: [] }), logEvent);
 
 function readPackageVersion(): string {
   try {

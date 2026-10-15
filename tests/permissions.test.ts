@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, chmodSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, chmodSync, rmSync, lstatSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildInstructions,
@@ -60,6 +60,7 @@ function errorOf(state: PermissionsState): string {
 afterEach(() => {
   resetPermissions();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   for (const dir of temps.splice(0)) {
     try { chmodSync(join(dir, ".mailbox-mcp", "permissions.json"), 0o600); } catch {}
     rmSync(dir, { recursive: true, force: true });
@@ -119,9 +120,24 @@ describe("finding the project file", () => {
     const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: `${root}/a/x/../b` }, cwd: "/", home: temp(), known: [] });
     expect(errorOf(state)).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
   });
-  it("never puts an absolute path in the message", () => {
+  it("resolves a relative CLAUDE_PROJECT_DIR against the server's folder", () => {
     const root = project("{");
-    expect(errorOf(load(root))).not.toContain(root);
+    mkdirSync(join(root, "a", "b"), { recursive: true });
+    const rel = relative(process.cwd(), join(root, "a", "b"));
+    const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: rel }, cwd: process.cwd(), home: temp(), known: [] });
+    expect(errorOf(state)).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
+  });
+  it("never puts an absolute path in the message, also after walking up", () => {
+    const root = project("{");
+    mkdirSync(join(root, "a", "b"), { recursive: true });
+    const message = errorOf(load(root, { start: join(root, "a", "b") }));
+    expect(message).not.toContain(root);
+    expect(message).not.toContain(tmpdir());
+  });
+  it("names the path from cwd after walking up", () => {
+    const root = project("{");
+    mkdirSync(join(root, "a", "b"), { recursive: true });
+    expect(errorOf(load(root, { start: join(root, "a", "b"), viaCwd: true }))).toContain("<cwd>/../../.mailbox-mcp/permissions.json");
   });
   it("uses CLAUDE_PROJECT_DIR, not cwd", () => {
     const withFile = project("{");
@@ -190,10 +206,10 @@ describe("reading the file safely", () => {
     execFileSync("mkfifo", [fifo]);
     // In a child process with a timeout: a blocking open would hang this
     // worker's own thread, where a vitest timeout could never fire.
-    // Uses the build (npm run build first), like the stdio tests.
-    const built = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "permissions.js");
-    const script = `import { readSafeFile } from ${JSON.stringify(built)}; try { readSafeFile(${JSON.stringify(fifo)}); console.log("read"); } catch (e) { console.log(e.kind); }`;
-    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { timeout: 5000, encoding: "utf8" });
+    // Loads the TypeScript source directly (Node 22.7+), so no build is needed.
+    const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "permissions.ts");
+    const script = `import { readSafeFile } from ${JSON.stringify(src)}; try { readSafeFile(${JSON.stringify(fifo)}); console.log("read"); } catch (e) { console.log(e.kind); }`;
+    const out = execFileSync(process.execPath, ["--experimental-transform-types", "--no-warnings", "--input-type=module", "-e", script], { timeout: 5000, encoding: "utf8" });
     expect(out.trim()).toBe("is not a regular file");
   }, 10000);
   it("refuses .mailbox-mcp being a file", () => {
@@ -211,13 +227,26 @@ describe("reading the file safely", () => {
     expect(errorOf(load(project("{}" + " ".repeat(65_535))))).toContain("too big");
   });
   it("strips a leading BOM", () => {
-    expect(load(project('﻿{"k": 1}'), { known: ["k"] }).kind).toBe("rules");
+    expect(load(project('\uFEFF{"k": 1}'), { known: ["k"] }).kind).toBe("rules");
   });
+  it("refuses a whitespace-only file as empty", () => {
+    expect(errorOf(load(project("  \n ")))).toContain("is empty");
+  });
+  it("refuses a dangling symlink as a symbolic link, not as no file", () => {
+    const root = project();
+    mkdirSync(join(root, ".mailbox-mcp"));
+    symlinkSync(join(root, "nowhere.json"), join(root, ".mailbox-mcp", "permissions.json"));
+    expect(errorOf(load(root))).toContain("is a symbolic link");
+  });
+  // 65,536 vs 65,537 can't tell this code from one that trusts fstat's size; the
+  // race (a file growing between fstat and read) isn't reproducible in a test.
   it("refuses an empty file; {} means no rules", () => {
     expect(errorOf(load(project("")))).toContain("is empty");
     expect(load(project("{}")).kind).toBe("none");
   });
-  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("refuses a file owned by someone else", () => {
+  // Needs a regular file owned by someone else; /etc/hosts is one on macOS and the CI runner.
+  const etcHostsForeign = (() => { try { const s = lstatSync("/etc/hosts"); return s.isFile() && s.uid !== process.getuid?.(); } catch { return false; } })();
+  it.skipIf(!etcHostsForeign)("refuses a file owned by someone else", () => {
     expect(() => readSafeFile("/etc/hosts")).toThrow("is not owned by you");
   });
   it("without O_NOFOLLOW: a missing file is still no rules, an existing one is refused", () => {
@@ -251,6 +280,21 @@ describe("parsing", () => {
     expect(message).not.toMatch(/\bmail\b/);
     expect(message).not.toContain("toString");
     expect(message).not.toContain("__proto__");
+  });
+  it("counts only unknown keys when some are known", () => {
+    expect(errorOf(load(project('{"k": 1, "x": 2}'), { known: ["k"] }))).toContain("has 1 key this version doesn't know");
+    expect(load(project("{}"), { known: ["k"] }).kind).toBe("none");
+  });
+  it("checks known keys as own properties, not inherited ones", () => {
+    expect(load(project("{}"), { known: ["toString"] }).kind).toBe("none");
+  });
+  it("hands on an own __proto__ key without changing a prototype", () => {
+    const state = load(project('{"__proto__": {"a": 1}}'), { known: ["__proto__"] });
+    expect(state.kind).toBe("rules");
+    if (state.kind !== "rules") return;
+    expect(Object.getPrototypeOf(state.project.keys)).toBeNull();
+    expect(Object.hasOwn(state.project.keys, "__proto__")).toBe(true);
+    expect(state.project.keys["__proto__"]).toEqual({ a: 1 });
   });
   it("says '1 key' for one unknown key", () => {
     expect(errorOf(load(project('{"x": 1}')))).toContain("has 1 key this version doesn't know");
@@ -335,12 +379,21 @@ describe("initProjectPermissions", () => {
     const root = project(`{"x": ${MARKER}`);
     const log = vi.fn();
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    const state = initProjectPermissions({ env: { CLAUDE_PROJECT_DIR: root }, cwd: root, home: temp(), known: [] }, log);
+    const state = initProjectPermissions(() => ({ env: { CLAUDE_PROJECT_DIR: root }, cwd: root, home: temp(), known: [] }), log);
     expect(state.kind).toBe("error");
     expect(getPermissionsState()).toEqual(state);
     expect(log).toHaveBeenCalledWith("permissions-error", expect.stringContaining("is not valid JSON"));
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("mail unavailable"));
     expect(JSON.stringify(log.mock.calls)).not.toContain(MARKER);
     expect(JSON.stringify(err.mock.calls)).not.toContain(MARKER);
-    err.mockRestore();
+  });
+  it("never throws: an error while gathering its input (a deleted cwd) becomes the error state", () => {
+    const log = vi.fn();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const state = initProjectPermissions(() => { const e = new Error(`gone ${MARKER}`) as NodeJS.ErrnoException; e.code = "ENOENT"; throw e; }, log);
+    expect(state).toEqual({ kind: "error", message: "the project's .mailbox-mcp/permissions.json could not be read" });
+    expect(getPermissionsState()).toEqual(state);
+    expect(log).toHaveBeenCalledWith("permissions-error", "unexpected ENOENT");
+    expect(JSON.stringify(log.mock.calls)).not.toContain(MARKER);
   });
 });
