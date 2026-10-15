@@ -127,6 +127,18 @@ describe("finding the project file", () => {
     const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: rel }, cwd: process.cwd(), home: temp(), known: [] });
     expect(errorOf(state)).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
   });
+  it("walks up from CLAUDE_PROJECT_DIR=\".\" (dirname(\".\") is \".\", so it must be resolved first)", () => {
+    const root = project("{");
+    mkdirSync(join(root, "a", "b"), { recursive: true });
+    const before = process.cwd();
+    process.chdir(join(root, "a", "b"));
+    try {
+      const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: "." }, cwd: process.cwd(), home: temp(), known: [] });
+      expect(errorOf(state)).toContain("$CLAUDE_PROJECT_DIR/../../.mailbox-mcp/permissions.json");
+    } finally {
+      process.chdir(before);
+    }
+  });
   it("never puts an absolute path in the message, also after walking up", () => {
     const root = project("{");
     mkdirSync(join(root, "a", "b"), { recursive: true });
