@@ -23,11 +23,14 @@ function temp(): string {
 // These tests run the build. Fail loudly when it is missing or older than the
 // sources they depend on, instead of testing stale code.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+// A convenience check, not a proof: it catches "edited src/, forgot to build"
+// and can't tell a dist/ built from another branch. CI builds before testing.
 beforeAll(() => {
   const newestSrc = Math.max(
-    ...readdirSync(join(ROOT, "src"), { recursive: true, withFileTypes: true })
-      .filter((d) => d.isFile())
-      .map((d) => statSync(join(d.parentPath, d.name)).mtimeMs),
+    ...readdirSync(join(ROOT, "src"), { recursive: true })
+      .map((f) => statSync(join(ROOT, "src", String(f))))
+      .filter((s) => s.isFile())
+      .map((s) => s.mtimeMs),
   );
   for (const built of ["dist/server.js", "dist/permissions.js"]) {
     let builtAt = 0;

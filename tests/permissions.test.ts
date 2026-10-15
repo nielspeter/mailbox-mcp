@@ -188,11 +188,12 @@ describe("finding the project file", () => {
     symlinkSync(elsewhere, join(root, ".mailbox-mcp"));
     expect(errorOf(load(root))).toContain("is not valid JSON");
   });
-  it("a CLAUDE_PROJECT_DIR that doesn't exist means no rules (by design; see plan 005)", () => {
+  it("a CLAUDE_PROJECT_DIR that doesn't exist walks up like any other; nothing found means no rules (see plan 005)", () => {
     const state = loadProjectPermissions({ env: { CLAUDE_PROJECT_DIR: join(project(), "gone", "away") }, cwd: "/", home: temp(), known: [] });
     expect(state.kind).toBe("none");
   });
-  it.skipIf(process.getuid?.() === 0)("fails closed when a folder on the way up can't be read (skipped as root)", () => {
+  // Skipped as root, who can read the locked folder.
+  it.skipIf(process.getuid?.() === 0)("fails closed when a folder on the way up can't be read", () => {
     const root = project("{}");
     mkdirSync(join(root, "locked", "inner"), { recursive: true });
     chmodSync(join(root, "locked"), 0);
@@ -202,7 +203,7 @@ describe("finding the project file", () => {
       chmodSync(join(root, "locked"), 0o700);
     }
   });
-  it("a CLAUDE_PROJECT_DIR that is a file walks on (ENOTDIR is 'not there')", () => {
+  it("walks on past a start path that is a file (ENOTDIR counts as 'no .git here')", () => {
     const root = project("{");
     writeFileSync(join(root, "afile"), "");
     expect(errorOf(load(root, { start: join(root, "afile") }))).toContain("$CLAUDE_PROJECT_DIR/../.mailbox-mcp/permissions.json");
@@ -230,7 +231,8 @@ describe("reading the file safely", () => {
     writeFileSync(join(root, ".mailbox-mcp"), "");
     expect(errorOf(load(root))).toContain("`.mailbox-mcp` is not a folder");
   });
-  it.skipIf(process.getuid?.() === 0)("refuses an unreadable file (skipped as root)", () => {
+  // Skipped as root, who can read the file.
+  it.skipIf(process.getuid?.() === 0)("refuses an unreadable file", () => {
     const root = project("{}");
     chmodSync(join(root, ".mailbox-mcp", "permissions.json"), 0);
     expect(errorOf(load(root))).toContain("can't be read");
@@ -258,7 +260,8 @@ describe("reading the file safely", () => {
     expect(errorOf(load(project("")))).toContain("is empty");
     expect(load(project("{}")).kind).toBe("none");
   });
-  it.skipIf(typeof process.getuid !== "function")("refuses a file owned by someone else (skipped where process.getuid doesn't exist)", () => {
+  // Skipped where process.getuid doesn't exist (Windows).
+  it.skipIf(typeof process.getuid !== "function")("refuses a file owned by someone else", () => {
     const root = project("{}");
     vi.spyOn(process, "getuid").mockReturnValue((process.getuid?.() ?? 0) + 1);
     expect(errorOf(load(root))).toContain("is not owned by you");
